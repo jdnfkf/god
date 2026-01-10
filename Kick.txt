@@ -1,0 +1,247 @@
+-- ==============================================
+-- 全新无敌脚本 - 零错误版本
+-- 修复第120行 nil 调用问题
+-- ==============================================
+
+print("=== 无敌脚本启动 ===")
+
+-- 获取玩家对象（使用最安全的方式）
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+if not player then
+    print("错误：无法获取玩家")
+    return
+end
+
+print("玩家获取成功:", player.Name)
+
+-- 无敌状态变量
+local isInvincible = false
+local deathPosition = nil
+
+-- ======================
+-- 1. 核心无敌功能
+-- ======================
+local function applyInvincibility(character)
+    if not character then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    -- 设置无敌
+    humanoid.MaxHealth = math.huge
+    humanoid.Health = humanoid.MaxHealth
+    
+    print("无敌已应用到角色")
+    return true
+end
+
+local function removeInvincibility(character)
+    if not character then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    -- 恢复正常
+    humanoid.MaxHealth = 100
+    humanoid.Health = math.min(humanoid.Health, 100)
+    
+    print("无敌已移除")
+    return true
+end
+
+-- ======================
+-- 2. 切换无敌函数
+-- ======================
+local function toggleInvincible()
+    isInvincible = not isInvincible
+    
+    local character = player.Character
+    if not character then
+        print("警告：角色不存在")
+        return
+    end
+    
+    if isInvincible then
+        -- 开启无敌
+        local success = applyInvincibility(character)
+        if success then
+            print("✅ 无敌模式开启")
+            
+            -- 记录死亡位置并处理重生
+            local humanoid = character:FindFirstChild("Humanoid")
+            if humanoid then
+                humanoid.Died:Connect(function()
+                    -- 记录死亡位置
+                    local rootPart = character:FindFirstChild("HumanoidRootPart")
+                    if rootPart then
+                        deathPosition = rootPart.Position
+                        print("死亡位置记录:", deathPosition)
+                    end
+                    
+                    -- 等待重生
+                    task.wait(1)
+                    
+                    -- 重生后重新应用无敌
+                    if isInvincible then
+                        local newChar = player.Character
+                        if newChar then
+                            task.wait(0.5)  -- 等待角色完全加载
+                            applyInvincibility(newChar)
+                            
+                            -- 传送到死亡位置
+                            local newRoot = newChar:FindFirstChild("HumanoidRootPart")
+                            if newRoot and deathPosition then
+                                newRoot.CFrame = CFrame.new(deathPosition + Vector3.new(0, 3, 0))
+                                print("已传送回死亡位置")
+                            end
+                        end
+                    end
+                end)
+            end
+        end
+    else
+        -- 关闭无敌
+        local success = removeInvincibility(character)
+        if success then
+            print("❌ 无敌模式关闭")
+        end
+    end
+    
+    return isInvincible
+end
+
+-- ======================
+-- 3. 自动回血系统
+-- ======================
+task.spawn(function()
+    while true do
+        task.wait(0.2)  -- 每0.2秒检查一次
+        
+        if isInvincible and player.Character then
+            local character = player.Character
+            local humanoid = character:FindFirstChild("Humanoid")
+            
+            if humanoid and humanoid.Health < humanoid.MaxHealth then
+                humanoid.Health = humanoid.MaxHealth
+            end
+        end
+    end
+end)
+
+-- ======================
+-- 4. 创建简单UI
+-- ======================
+local function createSimpleUI()
+    -- 等待PlayerGui
+    task.wait(2)
+    
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if not playerGui then
+        print("警告：找不到PlayerGui，跳过UI创建")
+        return nil
+    end
+    
+    -- 清理旧UI
+    local oldUI = playerGui:FindFirstChild("InvincibleUI")
+    if oldUI then
+        oldUI:Destroy()
+    end
+    
+    -- 创建新UI
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "InvincibleUI"
+    screenGui.Parent = playerGui
+    
+    -- 主按钮
+    local button = Instance.new("TextButton")
+    button.Name = "ToggleButton"
+    button.Size = UDim2.new(0, 100, 0, 40)
+    button.Position = UDim2.new(0.02, 0, 0.02, 0)
+    button.Text = "无敌关"
+    button.TextSize = 16
+    button.Font = Enum.Font.SourceSansBold
+    button.BackgroundColor3 = Color3.new(1, 0.3, 0.3)
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.BorderSizePixel = 2
+    button.BorderColor3 = Color3.new(1, 1, 1)
+    
+    -- 添加圆角
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = button
+    
+    button.Parent = screenGui
+    
+    -- 按钮点击事件
+    button.MouseButton1Click:Connect(function()
+        local newState = toggleInvincible()
+        button.Text = newState and "无敌开" or "无敌关"
+        button.BackgroundColor3 = newState and Color3.new(0.3, 1, 0.3) or Color3.new(1, 0.3, 0.3)
+        
+        -- 点击效果
+        local originalSize = button.Size
+        button.Size = UDim2.new(0, 95, 0, 38)
+        task.wait(0.05)
+        button.Size = originalSize
+    end)
+    
+    print("UI创建成功")
+    return screenGui
+end
+
+-- ======================
+-- 5. 初始化
+-- ======================
+-- 延迟创建UI
+task.spawn(function()
+    task.wait(3)
+    createSimpleUI()
+end)
+
+-- 初始无敌状态
+player.CharacterAdded:Connect(function(character)
+    task.wait(0.5)  -- 等待角色完全加载
+    
+    if isInvincible then
+        applyInvincibility(character)
+    end
+end)
+
+-- ======================
+-- 6. 键盘快捷键（可选）
+-- ======================
+task.spawn(function()
+    task.wait(4)
+    
+    local success, inputService = pcall(function()
+        return game:GetService("UserInputService")
+    end)
+    
+    if success and inputService then
+        inputService.InputBegan:Connect(function(input, processed)
+            if not processed and input.KeyCode == Enum.KeyCode.I then
+                local newState = toggleInvincible()
+                print("快捷键 I: 无敌", newState and "开启" or "关闭")
+            end
+        end)
+        print("快捷键已启用: 按 I 切换无敌")
+    end
+end)
+
+print("=== 脚本加载完成 ===")
+print("功能说明:")
+print("1. 点击左上角按钮切换无敌状态")
+print("2. 死亡后会在原地复活")
+print("3. 自动回血")
+print("=====================")
+
+-- 初始应用（如果已有角色）
+if player.Character then
+    task.wait(1)
+    -- 初始不开启无敌，让用户自己选择
+    -- toggleInvincible() -- 取消注释这行可以默认开启无敌
+end
+
+print("等待用户操作...")
