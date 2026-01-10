@@ -1,8 +1,8 @@
 loadstring([[
 -- ==============================================
--- Roblox通用无敌+原地复活脚本（效果增强版）
--- 核心改进：解决功能不生效、角色切换失效问题
--- 适配：手机端执行器、全Roblox游戏
+-- Roblox无敌+复活脚本（防怪物抓取增强版）
+-- 核心修复：拦截怪物强制死亡、锁定死亡前位置
+-- 适配：手机端、支持含抓取机制怪物的游戏（如Doors等）
 -- ==============================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -10,22 +10,23 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- ===================== 全局状态管理（增强稳定性） =====================
+-- ===================== 全局状态管理（新增死亡位置锁定） =====================
 local GlobalState = {
     GodModeEnabled = true,
     AutoRespawnEnabled = true,
     LastSafePosition = nil,
+    LastDeathPosition = nil, -- 新增：锁定死亡瞬间位置（防怪物抓取后位置偏移）
     IsScriptRunning = true,
-    -- 新增：存储连接防止内存泄漏
     ActiveConnections = {},
-    Version = "v2.4.0 (Fixed Inactive Issue)",
+    IsBeingGrabbed = false, -- 新增：怪物抓取状态标记
+    Version = "v2.5.0 (Anti-Monster Grab)",
     Author = "Roblox Script Toolkit"
 }
 
--- ===================== 核心工具函数（防失效增强） =====================
--- 工具1：安全等待对象加载（延长超时+重试提示）
+-- ===================== 核心工具函数（防抓取增强） =====================
+-- 工具1：安全获取角色组件（延长超时+状态校验）
 local function SafeWaitForChild(parent, childName, maxRetry, retryInterval)
-    maxRetry = maxRetry or 25 -- 延长超时（原15次→25次）
+    maxRetry = maxRetry or 30 -- 进一步延长超时（应对怪物抓取时的组件加载延迟）
     retryInterval = retryInterval or 0.2
     local retryCount = 0
     while retryCount < maxRetry do
@@ -37,22 +38,21 @@ local function SafeWaitForChild(parent, childName, maxRetry, retryInterval)
         retryCount = retryCount + 1
         task.wait(retryInterval)
     end
-    warn("[Tool] 等待对象超时：" .. childName .. "，将尝试重新获取")
-    -- 超时后二次重试（解决临时加载失败）
-    task.wait(1)
+    warn("[Tool] 等待对象超时：" .. childName .. "，重试获取")
+    task.wait(1.5)
     return parent:FindFirstChild(childName)
 end
 
--- 工具2：检查角色有效性（增加组件状态判断）
+-- 工具2：检查角色有效性（新增抓取状态判断）
 local function IsCharacterValid(character)
     if not character or not character:IsDescendantOf(Workspace) then return false end
     local humanoid = character:FindFirstChild("Humanoid")
     local hrp = character:FindFirstChild("HumanoidRootPart")
-    -- 新增：判断Humanoid是否正常（防失效）
-    return humanoid and hrp and humanoid.Health ~= nil and humanoid.MaxHealth ~= nil
+    -- 新增：判断人形是否处于正常状态（非抓取、非 ragdoll）
+    return humanoid and hrp and humanoid.Health ~= nil and humanoid.MaxHealth ~= nil and not GlobalState.IsBeingGrabbed
 end
 
--- 工具3：清理旧连接（防止重复绑定导致失效）
+-- 工具3：清理旧连接（防止抓取时重复绑定冲突）
 local function ClearOldConnections()
     for _, conn in ipairs(GlobalState.ActiveConnections) do
         if conn and typeof(conn) == "RBXScriptConnection" then
@@ -62,41 +62,50 @@ local function ClearOldConnections()
     GlobalState.ActiveConnections = {}
 end
 
--- ===================== 角色组件管理（实时更新防失效） =====================
+-- ===================== 角色组件管理（抓取状态适配） =====================
 local CharacterManager = {
-    -- 更新角色组件（增加重试逻辑）
     UpdateComponents = function()
         local character = LocalPlayer.Character
         if not character then
             print("[CharacterManager] 等待角色生成...")
-            -- 新增：等待角色时增加超时重试
             local charWaitConn = LocalPlayer.CharacterAdded:Wait()
             character = charWaitConn
-            task.wait(1.2) -- 延长手机端加载延迟（原0.7→1.2秒）
+            task.wait(1.8) -- 延长手机端角色加载延迟（应对抓取后重生）
         end
-        -- 安全获取核心组件
-        local humanoid = SafeWaitForChild(character, "Humanoid", 25, 0.1)
-        local hrp = SafeWaitForChild(character, "HumanoidRootPart", 25, 0.1)
-        -- 组件无效时重试
+        -- 安全获取组件（抓取时可能出现组件临时失效）
+        local humanoid = SafeWaitForChild(character, "Humanoid", 30, 0.1)
+        local hrp = SafeWaitForChild(character, "HumanoidRootPart", 30, 0.1)
+        
+        -- 组件无效时强制重试（防抓取导致的组件丢失）
         if not humanoid or not hrp then
-            task.wait(0.5)
-            humanoid = SafeWaitForChild(character, "Humanoid", 20, 0.1)
-            hrp = SafeWaitForChild(character, "HumanoidRootPart", 20, 0.1)
+            task.wait(1)
+            humanoid = SafeWaitForChild(character, "Humanoid", 25, 0.1)
+            hrp = SafeWaitForChild(character, "HumanoidRootPart", 25, 0.1)
         end
-        -- 存储有效组件
+        
+        -- 存储组件并监听抓取状态（如怪物导致的 ragdoll 状态）
         GlobalState.CharacterComponents = {
             Character = character,
             Humanoid = humanoid,
             HumanoidRootPart = hrp
         }
         print("[CharacterManager] 角色组件更新完成")
+        
+        -- 新增：监听人形状态，标记抓取（如Doors中Seek的黑手抓取）
+        humanoid.StateChanged:Connect(function(oldState, newState)
+            if newState == Enum.HumanoidStateType.Ragdoll or newState == Enum.HumanoidStateType.FallingDown then
+                GlobalState.IsBeingGrabbed = true
+                print("[CharacterManager] 检测到怪物抓取，标记抓取状态")
+            else
+                GlobalState.IsBeingGrabbed = false
+            end
+        end)
+        
         return character, humanoid, hrp
     end,
 
-    -- 获取当前组件（实时校验）
     GetComponents = function()
         local char = GlobalState.CharacterComponents.Character
-        -- 组件失效时重新加载
         if not IsCharacterValid(char) then
             return CharacterManager.UpdateComponents()
         end
@@ -106,19 +115,22 @@ local CharacterManager = {
     end
 }
 
--- ===================== 位置记录模块（防丢失增强） =====================
+-- ===================== 位置记录模块（死亡瞬间锁定） =====================
 local PositionRecorder = {
     StartRecording = function()
-        print("[PositionRecorder] 位置记录模块已启动")
-        -- 存储连接防止丢失
+        print("[PositionRecorder] 位置记录模块已启动（含死亡锁定）")
         local conn = RunService.Heartbeat:Connect(function()
             if not GlobalState.IsScriptRunning then return end
             local _, humanoid, hrp = CharacterManager.GetComponents()
-            if humanoid and hrp and humanoid.Health > 0 then
-                GlobalState.LastSafePosition = hrp.Position
-                -- 新增：位置更新提示（确认功能生效）
-                if math.floor(tick() % 8) == 0 then
-                    print("[PositionRecorder] 当前安全位置：" .. tostring(GlobalState.LastSafePosition))
+            if humanoid and hrp then
+                -- 存活时记录安全位置
+                if humanoid.Health > 0 then
+                    GlobalState.LastSafePosition = hrp.Position
+                end
+                -- 死亡瞬间锁定位置（不受怪物抓取后位置移动影响）
+                if humanoid.Health <= 0 and not GlobalState.IsBeingGrabbed then
+                    GlobalState.LastDeathPosition = hrp.Position
+                    print("[PositionRecorder] 死亡位置锁定：" .. tostring(GlobalState.LastDeathPosition))
                 end
             end
         end)
@@ -126,26 +138,26 @@ local PositionRecorder = {
     end
 }
 
--- ===================== 无敌功能模块（防拦截增强） =====================
+-- ===================== 无敌功能模块（拦截强制死亡） =====================
 local GodModeModule = {
     StartGodMode = function()
-        print("[GodModeModule] 无敌模块已启动")
-        -- 存储连接防止丢失
+        print("[GodModeModule] 无敌模块已启动（防抓取死亡）")
         local conn = RunService.Heartbeat:Connect(function()
             if not GlobalState.IsScriptRunning or not GlobalState.GodModeEnabled then return end
             local _, humanoid = CharacterManager.GetComponents()
             if humanoid then
-                -- 强制禁用死亡机制（防游戏覆盖设置）
+                -- 强制禁用所有死亡/抓取相关状态（如怪物处决、ragdoll）
                 humanoid.BreakJointsOnDeath = false
                 humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false) -- 拦截抓取导致的 ragdoll
                 humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-                -- 强制维持满血量（防拦截）
-                if humanoid.Health > 0 then
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Stunned, false) -- 新增：拦截怪物击晕
+                
+                -- 抓取/死亡时强制回血（防怪物秒杀）
+                if humanoid.Health <= 0 or GlobalState.IsBeingGrabbed then
                     humanoid.Health = humanoid.MaxHealth
-                    -- 新增：血量恢复提示（确认功能生效）
-                    if math.floor(tick() % 10) == 0 then
-                        print("[GodModeModule] 已维持满血量")
-                    end
+                    GlobalState.IsBeingGrabbed = false -- 重置抓取状态
+                    print("[GodModeModule] 拦截强制死亡/抓取，恢复满血量")
                 end
             end
         end)
@@ -153,49 +165,49 @@ local GodModeModule = {
     end
 }
 
--- ===================== 原地复活模块（防失效增强） =====================
+-- ===================== 原地复活模块（死亡位置精准传送） =====================
 local AutoRespawnModule = {
     StartAutoRespawn = function()
-        print("[AutoRespawnModule] 原地复活模块已启动")
-        -- 存储连接防止丢失
+        print("[AutoRespawnModule] 原地复活模块已启动（精准位置）")
         local conn = RunService.Heartbeat:Connect(function()
             if not GlobalState.IsScriptRunning or not GlobalState.AutoRespawnEnabled or not GlobalState.GodModeEnabled then return end
             local character, humanoid, hrp = CharacterManager.GetComponents()
-            if humanoid and hrp and humanoid.Health <= 0 and GlobalState.LastSafePosition then
-                print("[AutoRespawnModule] 检测到死亡，执行原地复活")
-                -- 强制恢复状态（防游戏拦截）
+            if humanoid and hrp and humanoid.Health <= 0 then
+                -- 优先使用死亡瞬间锁定的位置（无则用安全位置，防空值）
+                local respawnPos = GlobalState.LastDeathPosition or GlobalState.LastSafePosition or Vector3.new(0, 3, 0)
+                print("[AutoRespawnModule] 执行原地复活，位置：" .. tostring(respawnPos))
+                
+                -- 强制复活+精准传送（增加高度偏移防卡地）
                 humanoid.Health = humanoid.MaxHealth
+                hrp.CFrame = CFrame.new(respawnPos + Vector3.new(0, 3, 0)) -- 提高高度防怪物抓取位置卡地
                 humanoid:ChangeState(Enum.HumanoidStateType.Running)
-                -- 精准传送（增加高度偏移防卡地）
-                hrp.CFrame = CFrame.new(GlobalState.LastSafePosition + Vector3.new(0, 2.5, 0))
-                -- 新增：复活后重新绑定组件（防止后续失效）
-                task.wait(0.3)
+                
+                -- 复活后重新初始化组件（防止后续抓取失效）
+                task.wait(0.5)
                 CharacterManager.UpdateComponents()
+                GlobalState.IsBeingGrabbed = false -- 重置抓取状态
             end
         end)
         table.insert(GlobalState.ActiveConnections, conn)
     end
 }
 
--- ===================== 角色切换适配（防失效核心） =====================
+-- ===================== 角色切换与抓取后适配 =====================
 local function BindCharacterChange()
-    -- 角色生成时重新初始化
+    -- 角色重生/切换时重新初始化（应对抓取后重生）
     LocalPlayer.CharacterAdded:Connect(function(newChar)
-        print("[System] 检测到角色切换，重新初始化功能")
-        -- 清理旧连接（防止冲突）
+        print("[System] 检测到角色切换/重生，重新初始化功能")
         ClearOldConnections()
-        -- 延迟加载新角色（适配手机端节奏）
-        task.wait(1.5)
-        -- 重新更新组件+启动所有功能
+        task.wait(2) -- 延长延迟（适配手机端抓取后重生节奏）
         CharacterManager.UpdateComponents()
         PositionRecorder.StartRecording()
         GodModeModule.StartGodMode()
         AutoRespawnModule.StartAutoRespawn()
-        print("[System] 角色切换后功能重新绑定完成")
+        print("[System] 角色功能重新绑定完成（防抓取生效）")
     end)
 end
 
--- ===================== 手机端提示模块（功能状态可视化） =====================
+-- ===================== 手机端提示模块（抓取防护提示） =====================
 local MobileHintModule = {
     ShowStartupHint = function()
         local ScreenGui = Instance.new("ScreenGui")
@@ -203,16 +215,14 @@ local MobileHintModule = {
         ScreenGui.Parent = game:GetService("CoreGui")
         ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         
-        -- 提示框框架
         local Frame = Instance.new("Frame")
-        Frame.Size = UDim2.new(0.85, 0, 0.3, 0)
-        Frame.Position = UDim2.new(0.075, 0, 0.6, 0)
+        Frame.Size = UDim2.new(0.9, 0, 0.35, 0)
+        Frame.Position = UDim2.new(0.05, 0, 0.55, 0)
         Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
         Frame.BackgroundTransparency = 0.2
         Frame.BorderSizePixel = 0
         Frame.Parent = ScreenGui
         
-        -- 圆角+渐变装饰
         local UICorner = Instance.new("UICorner")
         UICorner.CornerRadius = UDim.new(0, 12)
         UICorner.Parent = Frame
@@ -224,11 +234,10 @@ local MobileHintModule = {
         })
         UIGradient.Parent = Frame
         
-        -- 提示文字（显示功能状态）
         local TextLabel = Instance.new("TextLabel")
         TextLabel.Size = UDim2.new(1, 0, 1, 0)
         TextLabel.BackgroundTransparency = 1
-        TextLabel.Text = "✅ 脚本已启动（增强版）\n功能：无敌+原地复活\n版本：" .. GlobalState.Version .. "\n控制台可查看功能日志"
+        TextLabel.Text = "✅ 防怪物抓取脚本启动\n功能：拦截死亡+精准复活\n版本：" .. GlobalState.Version .. "\n被抓取时自动回血"
         TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
         TextLabel.TextScaled = true
         TextLabel.Font = Enum.Font.Gotham
@@ -236,48 +245,41 @@ local MobileHintModule = {
         TextLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
         TextLabel.Parent = Frame
         
-        -- 8秒后自动隐藏（延长显示时间，方便确认）
-        task.wait(8)
-        for i = 1, 15 do
-            Frame.BackgroundTransparency = Frame.BackgroundTransparency + 0.05
-            TextLabel.TextTransparency = TextLabel.TextTransparency + 0.06
+        -- 10秒后自动隐藏（延长显示，方便确认抓取防护功能）
+        task.wait(10)
+        for i = 1, 20 do
+            Frame.BackgroundTransparency = Frame.BackgroundTransparency + 0.04
+            TextLabel.TextTransparency = TextLabel.TextTransparency + 0.05
             task.wait(0.1)
         end
         ScreenGui:Destroy()
     end
 }
 
--- ===================== 主初始化模块（防失效启动） =====================
+-- ===================== 主初始化模块（防抓取启动） =====================
 local MainInitializer = {
     InitializeAll = function()
-        print("[MainInitializer] 脚本初始化中（增强版）")
-        -- 清理旧连接（防止残留冲突）
+        print("[MainInitializer] 脚本初始化中（防怪物抓取版）")
         ClearOldConnections()
-        -- 初始化角色组件（确保加载完成）
         CharacterManager.UpdateComponents()
-        -- 启动核心功能
         PositionRecorder.StartRecording()
         GodModeModule.StartGodMode()
         AutoRespawnModule.StartAutoRespawn()
-        -- 绑定角色切换适配（防失效关键）
         BindCharacterChange()
-        -- 显示手机端提示
         MobileHintModule.ShowStartupHint()
-        -- 启动日志（确认功能状态）
         print("[MainInitializer] 脚本启动完成 | 版本：" .. GlobalState.Version)
-        print("[MainInitializer] 功能状态：无敌=" .. tostring(GlobalState.GodModeEnabled) .. " | 自动复活=" .. tostring(GlobalState.AutoRespawnEnabled))
+        print("[MainInitializer] 功能状态：无敌=" .. tostring(GlobalState.GodModeEnabled) .. " | 精准复活=" .. tostring(GlobalState.AutoRespawnEnabled))
     end
 }
 
--- ===================== 执行主初始化（防启动失败） =====================
--- 新增：启动重试逻辑
+-- ===================== 安全启动（防抓取时初始化失败） =====================
 local function SafeStart()
     local success, err = pcall(function()
         MainInitializer.InitializeAll()
     end)
     if not success then
-        warn("[System] 首次启动失败，重试中：" .. err)
-        task.wait(1)
+        warn("[System] 首次启动失败（可能因抓取状态），重试中：" .. err)
+        task.wait(2)
         MainInitializer.InitializeAll()
     end
 end
