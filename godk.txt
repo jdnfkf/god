@@ -1,7 +1,7 @@
 loadstring([[
 -- ==============================================
--- 智能适配防死亡脚本（屏幕提示版）
--- 核心：自动检测机制+屏幕提示+动态适配
+-- 修复版智能防死亡脚本（0.05秒原地复活）
+-- 核心：死亡后0.05秒立即原地复活，无缝继续游戏
 -- ==============================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -17,17 +17,17 @@ local GlobalState = {
         HasStateProperty = false,
         HasDestroyDeath = false,
         HasNetworkPacket = false
-    }
+    },
+    IsCharLoaded = false -- 角色加载状态标记
 }
 
--- ===================== 工具：显示屏幕提示 =====================
+-- 工具：显示屏幕提示
 local function ShowScreenTip(title, content, duration)
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "SmartAntiDeathTip"
     ScreenGui.Parent = CoreGui
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-    -- 背景框
     local Frame = Instance.new("Frame")
     Frame.Size = UDim2.new(0.8, 0, 0.4, 0)
     Frame.Position = UDim2.new(0.1, 0, 0.5, 0)
@@ -40,7 +40,6 @@ local function ShowScreenTip(title, content, duration)
     UICorner.CornerRadius = UDim.new(0, 12)
     UICorner.Parent = Frame
 
-    -- 标题
     local Title = Instance.new("TextLabel")
     Title.Size = UDim2.new(1, 0, 0.2, 0)
     Title.Position = UDim2.new(0, 0, 0.05, 0)
@@ -51,7 +50,6 @@ local function ShowScreenTip(title, content, duration)
     Title.Font = Enum.Font.GothamBold
     Title.Parent = Frame
 
-    -- 内容
     local Content = Instance.new("TextLabel")
     Content.Size = UDim2.new(1, 0, 0.7, 0)
     Content.Position = UDim2.new(0, 0, 0.25, 0)
@@ -63,7 +61,6 @@ local function ShowScreenTip(title, content, duration)
     Content.TextWrapped = true
     Content.Parent = Frame
 
-    -- 自动销毁
     task.wait(duration)
     for i = 1, 20 do
         Frame.BackgroundTransparency += 0.04
@@ -74,10 +71,59 @@ local function ShowScreenTip(title, content, duration)
     ScreenGui:Destroy()
 end
 
--- ===================== 阶段1：自动检测游戏机制 =====================
+-- 核心：0.05秒原地无限复活逻辑
+local function UnlimitedRespawnAtDeathPos()
+    -- 1. 破解复活次数限制（通用拦截）
+    pcall(function()
+        LocalPlayer.DescendantAdded:Connect(function(child)
+            if (child:IsA("IntValue") or child:IsA("BoolValue")) then
+                local name = child.Name:lower()
+                if name:find("respawn") or name:find("revive") or name:find("count") or name:find("复活") then
+                    child.Changed:Connect(function()
+                        if GlobalState.IsGodMode then
+                            child.Value = child:IsA("IntValue") and 0 or true
+                        end
+                    end)
+                end
+            end
+        end)
+    end)
+
+    -- 2. 死亡后0.05秒原地复活（无缝衔接）
+    LocalPlayer.CharacterAdded:Connect(function(char)
+        local primaryPart = char:WaitForChild("HumanoidRootPart", 5)
+        local hum = char:WaitForChild("Humanoid", 5)
+        if not primaryPart or not hum then return end
+
+        local lastPosition = primaryPart.Position
+        -- 实时更新位置，确保复活在死亡前最新位置
+        primaryPart:GetPropertyChangedSignal("Position"):Connect(function()
+            lastPosition = primaryPart.Position
+        end)
+
+        -- 死亡触发0.05秒极速复活
+        hum.Died:Connect(function()
+            if GlobalState.IsGodMode then
+                task.wait(0.05) -- 缩短至0.05秒，几乎无延迟
+                LocalPlayer:LoadCharacter()
+                -- 快速传送至死亡位置，无缝继续游戏
+                LocalPlayer.CharacterAdded:Wait()
+                local newChar = LocalPlayer.Character
+                local newPart = newChar:WaitForChild("HumanoidRootPart", 2)
+                if newPart then
+                    newChar:PivotTo(CFrame.new(lastPosition))
+                end
+            end
+        end)
+    end)
+end
+
+-- 阶段1：自动检测游戏机制
 local function DetectGameMechanisms()
     ShowScreenTip("智能检测中", "正在识别游戏死亡机制...", 2)
-    
+    repeat task.wait(0.2) until LocalPlayer.Character ~= nil
+    GlobalState.IsCharLoaded = true
+
     -- 检测1：远程指令死亡
     for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
         if (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) and obj.Name:lower():find("dead") then
@@ -97,9 +143,7 @@ local function DetectGameMechanisms()
     -- 检测3：角色销毁死亡
     local testChar = Instance.new("Model")
     testChar.AncestryChanged:Connect(function(_, parent)
-        if not parent then
-            GlobalState.DetectedMechanisms.HasDestroyDeath = true
-        end
+        if not parent then GlobalState.DetectedMechanisms.HasDestroyDeath = true end
     end)
     testChar.Parent = Workspace
     testChar.Parent = nil
@@ -107,33 +151,19 @@ local function DetectGameMechanisms()
     -- 检测4：网络包同步
     pcall(function()
         local Network = game:GetService("NetworkClient")
-        if Network then
-            GlobalState.DetectedMechanisms.HasNetworkPacket = true
-        end
+        if Network then GlobalState.DetectedMechanisms.HasNetworkPacket = true end
     end)
 
-    -- 生成检测结果内容
     local resultContent = "已识别机制：\n"
-    if GlobalState.DetectedMechanisms.HasRemoteDeath then
-        resultContent ..= "- 远程指令死亡\n"
-    end
-    if GlobalState.DetectedMechanisms.HasStateProperty then
-        resultContent ..= "- 状态属性死亡\n"
-    end
-    if GlobalState.DetectedMechanisms.HasDestroyDeath then
-        resultContent ..= "- 角色销毁死亡\n"
-    end
-    if GlobalState.DetectedMechanisms.HasNetworkPacket then
-        resultContent ..= "- 网络包同步死亡"
-    end
-    if resultContent == "已识别机制：\n" then
-        resultContent = "已识别机制：\n- 通用基础机制"
-    end
-
+    resultContent = GlobalState.DetectedMechanisms.HasRemoteDeath and resultContent .. "- 远程指令死亡\n" or resultContent
+    resultContent = GlobalState.DetectedMechanisms.HasStateProperty and resultContent .. "- 状态属性死亡\n" or resultContent
+    resultContent = GlobalState.DetectedMechanisms.HasDestroyDeath and resultContent .. "- 角色销毁死亡\n" or resultContent
+    resultContent = GlobalState.DetectedMechanisms.HasNetworkPacket and resultContent .. "- 网络包同步死亡" or resultContent
+    resultContent = resultContent == "已识别机制：\n" and "已识别机制：\n- 通用基础机制" or resultContent
     ShowScreenTip("检测完成", resultContent, 5)
 end
 
--- ===================== 阶段2：启用匹配逻辑 =====================
+-- 阶段2：启用匹配逻辑
 local function EnableMatchedLogic()
     local enabledLogic = "已启用逻辑：\n"
 
@@ -160,9 +190,7 @@ local function EnableMatchedLogic()
             setreadonly(mt, false)
             local oldIndex = mt.__index
             mt.__index = function(t, k)
-                if GlobalState.IsGodMode and k:lower():find("dead") then
-                    return false
-                end
+                if GlobalState.IsGodMode and k:lower():find("dead") then return false end
                 return oldIndex(t, k)
             end
             setreadonly(mt, true)
@@ -174,9 +202,7 @@ local function EnableMatchedLogic()
     if GlobalState.DetectedMechanisms.HasDestroyDeath then
         LocalPlayer.CharacterAdded:Connect(function(char)
             char.AncestryChanged:Connect(function(_, parent)
-                if GlobalState.IsGodMode and not parent then
-                    task.spawn(function() LocalPlayer:LoadCharacter() end)
-                end
+                if GlobalState.IsGodMode and not parent then task.spawn(function() LocalPlayer:LoadCharacter() end) end
             end)
         end)
         enabledLogic ..= "- 角色销毁拦截\n"
@@ -194,40 +220,41 @@ local function EnableMatchedLogic()
                 return oldSend(self, packet)
             end
         end)
-        enabledLogic ..= "- 网络包拦截"
+        enabledLogic ..= "- 网络包拦截\n"
     end
 
-    -- 通用逻辑
+    -- 启用0.05秒原地复活
+    UnlimitedRespawnAtDeathPos()
+    enabledLogic ..= "- 0.05秒原地无限复活"
+
+    -- 通用满状态维持
     RunService.Heartbeat:Connect(function()
-        if not GlobalState.IsGodMode then return end
+        if not GlobalState.IsGodMode or not GlobalState.IsCharLoaded then return end
         local char = LocalPlayer.Character
         if char then
             local hum = char:FindFirstChild("Humanoid")
-            if hum then
-                hum.Health = hum.MaxHealth
-                hum.BreakJointsOnDeath = false
-            end
+            if hum then hum.Health = hum.MaxHealth; hum.BreakJointsOnDeath = false end
         end
     end)
-    if enabledLogic == "已启用逻辑：\n" then
-        enabledLogic = "已启用逻辑：\n- 通用满状态维持"
-    end
 
+    enabledLogic = enabledLogic == "已启用逻辑：\n" and "已启用逻辑：\n- 通用满状态维持\n- 0.05秒原地无限复活" or enabledLogic
     ShowScreenTip("逻辑启用完成", enabledLogic, 5)
 end
 
--- ===================== 快捷键开关 =====================
+-- 快捷键开关
 game:GetService("UserInputService").InputBegan:Connect(function(input)
     if input.KeyCode == GlobalState.ToggleKey then
         GlobalState.IsGodMode = not GlobalState.IsGodMode
-        local status = GlobalState.IsGodMode and "✅ 防死亡已开启" or "❌ 防死亡已关闭"
+        local status = GlobalState.IsGodMode and "✅ 防死亡+0.05秒复活已开启" or "❌ 防死亡+0.05秒复活已关闭"
         ShowScreenTip("功能切换", status, 2)
     end
 end)
 
--- ===================== 启动流程 =====================
+-- 启动流程
+repeat task.wait(0.5) until LocalPlayer.Character ~= nil
+GlobalState.IsCharLoaded = true
 DetectGameMechanisms()
-task.wait(2.5) -- 等待检测提示结束
+task.wait(2.5)
 EnableMatchedLogic()
-ShowScreenTip("脚本启动完成", "按F3切换防死亡功能", 3)
+ShowScreenTip("脚本启动完成", "按F3切换功能\n死亡0.05秒原地复活，无缝继续", 3)
 ]])()
