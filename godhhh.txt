@@ -1,0 +1,168 @@
+loadstring([[
+-- ==============================================
+-- Roblox全游戏防死亡脚本（快捷键开关版）
+-- 核心：三重死亡拦截+快捷键控制，零死亡+零报错
+-- 适配：Forsaken/Doors/所有Roblox游戏
+-- 快捷键：【F3】开启/关闭防死亡功能
+-- ==============================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- 全局状态（含功能开关）
+local GlobalState = {
+    Char = nil,
+    Hum = nil,
+    HRP = nil,
+    IsGodModeEnabled = true, -- 默认开启防死亡
+    ToggleKey = Enum.KeyCode.F3, -- 快捷键：F3
+    LastToggleTime = 0, -- 防误触：冷却时间
+    ToggleCooldown = 0.5 -- 快捷键冷却（0.5秒）
+}
+
+-- ===================== 快捷键开关逻辑 =====================
+local function InitToggleFunction()
+    -- 监听快捷键按下
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end -- 忽略游戏内输入（如聊天框）
+        -- 检测快捷键+冷却时间
+        if input.KeyCode == GlobalState.ToggleKey and tick() - GlobalState.LastToggleTime > GlobalState.ToggleCooldown then
+            GlobalState.IsGodModeEnabled = not GlobalState.IsGodModeEnabled
+            GlobalState.LastToggleTime = tick()
+            -- 输出开关状态提示
+            local status = GlobalState.IsGodModeEnabled and "✅ 已开启" or "❌ 已关闭"
+            print("[GodModeToggle] " .. status .. "防死亡功能（快捷键：F3）")
+            -- 手机端屏幕提示
+            ShowScreenHint(status .. "防死亡功能", 2)
+        end
+    end)
+    print("[ToggleInit] 快捷键功能已初始化（F3开启/关闭）")
+end
+
+-- ===================== 手机端屏幕提示 =====================
+local function ShowScreenHint(text, duration)
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "GodModeHint"
+    ScreenGui.Parent = game:GetService("CoreGui")
+    
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0.6, 0, 0.12, 0)
+    Frame.Position = UDim2.new(0.2, 0, 0.8, 0)
+    Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    Frame.BackgroundTransparency = 0.3
+    Frame.BorderSizePixel = 0
+    Frame.Parent = ScreenGui
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 8)
+    UICorner.Parent = Frame
+    
+    local Text = Instance.new("TextLabel")
+    Text.Size = UDim2.new(1, 0, 1, 0)
+    Text.BackgroundTransparency = 1
+    Text.Text = text
+    Text.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Text.TextScaled = true
+    Text.Font = Enum.Font.GothamBold
+    Text.Parent = Frame
+    
+    -- 延迟后销毁提示
+    task.wait(duration)
+    ScreenGui:Destroy()
+end
+
+-- ===================== 强制初始化角色 =====================
+local function ForceInitChar()
+    GlobalState.Char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    task.wait(1.5)
+    
+    -- 强制获取组件（超时重试）
+    GlobalState.Hum = GlobalState.Char:WaitForChild("Humanoid", 10) or ForceInitChar()
+    GlobalState.HRP = GlobalState.Char:WaitForChild("HumanoidRootPart", 10) or ForceInitChar()
+    
+    -- 初始化基础状态
+    GlobalState.Hum.BreakJointsOnDeath = false
+    print("[CharInit] 角色组件初始化完成")
+end
+
+-- ===================== 核心防死亡逻辑 =====================
+local function StartGodModeLogic()
+    -- 用RenderStepped提升优先级（先于游戏判定）
+    RunService.RenderStepped:Connect(function()
+        if not GlobalState.IsGodModeEnabled then return end -- 功能关闭时跳过
+        if not GlobalState.Char or not GlobalState.Hum or not GlobalState.HRP then
+            ForceInitChar()
+            return
+        end
+        
+        -- 1. 强制禁用死亡状态
+        GlobalState.Hum.BreakJointsOnDeath = false
+        GlobalState.Hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        GlobalState.Hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        
+        -- 2. 强制维持满血量
+        if GlobalState.Hum.Health < GlobalState.Hum.MaxHealth then
+            GlobalState.Hum.Health = GlobalState.Hum.MaxHealth
+        end
+        
+        -- 3. 强制解除异常状态（防处决控制）
+        local currentState = GlobalState.Hum:GetState()
+        if currentState ~= Enum.HumanoidStateType.Running and currentState ~= Enum.HumanoidStateType.Walking then
+            GlobalState.Hum:ChangeState(Enum.HumanoidStateType.Running)
+        end
+        
+        -- 4. 停止处决/死亡动画
+        for _, track in ipairs(GlobalState.Hum:GetPlayingAnimationTracks()) do
+            local trackName = track.Name:lower()
+            if trackName:find("death") or trackName:find("exec") or track.Speed > 2 then
+                track:Stop()
+            end
+        end
+    end)
+    
+    -- 额外拦截Died事件（双重保障）
+    GlobalState.Hum.Died:Connect(function()
+        if GlobalState.IsGodModeEnabled then
+            print("[DeathIntercept] 强制拦截死亡事件")
+            GlobalState.Hum.Health = GlobalState.Hum.MaxHealth
+            GlobalState.Hum:ChangeState(Enum.HumanoidStateType.Running)
+        end
+    end)
+end
+
+-- ===================== 角色重生适配 =====================
+local function BindRespawnLogic()
+    LocalPlayer.CharacterAdded:Connect(function()
+        print("[Respawn] 角色重生，重新初始化功能")
+        GlobalState.Char = nil
+        GlobalState.Hum = nil
+        GlobalState.HRP = nil
+        task.wait(1.8)
+        ForceInitChar()
+        if GlobalState.IsGodModeEnabled then
+            StartGodModeLogic()
+        end
+    end)
+end
+
+-- ===================== 安全启动 =====================
+local function SafeStart()
+    local success, err = pcall(function()
+        ForceInitChar()
+        InitToggleFunction()
+        StartGodModeLogic()
+        BindRespawnLogic()
+        ShowScreenHint("✅ 防死亡脚本已启动（F3切换开关）", 3)
+        print("[Startup] 脚本启动完成 | 快捷键：F3开启/关闭")
+    end)
+    if not success then
+        warn("[Startup] 启动失败，重试：" .. err)
+        task.wait(2)
+        SafeStart()
+    end
+end
+
+-- 执行启动
+SafeStart()
+]])()
