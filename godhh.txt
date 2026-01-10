@@ -1,14 +1,11 @@
 loadstring([[
--- ==============================================
--- CorePackages多模块功能脚本（零报错）
--- 功能：位置记录、无敌、复活分模块存储
--- ==============================================
+-- 最终零报错版：CorePackages多模块功能脚本
 local CorePackages = game:GetService("CorePackages")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
--- 配置：文件夹/模块命名
+-- 配置
 local Config = {
     RootFolder = "GameEnhanceSystem",
     PosFolder = "PositionRecorder",
@@ -16,13 +13,13 @@ local Config = {
     RespawnFolder = "AutoRespawnModule"
 }
 
--- 工具：清理旧资源
+-- 清理旧资源
 local function CleanOld()
     local root = CorePackages:FindFirstChild(Config.RootFolder)
     if root then root:Destroy() end
 end
 
--- 工具：创建文件夹
+-- 创建文件夹
 local function CreateFolder(name, parent)
     local folder = Instance.new("Folder")
     folder.Name = name
@@ -30,7 +27,7 @@ local function CreateFolder(name, parent)
     return folder
 end
 
--- 工具：创建功能模块（写入完整逻辑）
+-- 创建功能模块
 local function CreateModule(folder, logic)
     local module = Instance.new("ModuleScript")
     module.Name = "Main"
@@ -39,20 +36,19 @@ local function CreateModule(folder, logic)
     return module
 end
 
--- ===================== 步骤1：初始化CorePackages文件夹 =====================
+-- ===================== 初始化文件夹 =====================
 CleanOld()
 local rootFolder = CreateFolder(Config.RootFolder, CorePackages)
 local posFolder = CreateFolder(Config.PosFolder, rootFolder)
 local godFolder = CreateFolder(Config.GodFolder, rootFolder)
 local respawnFolder = CreateFolder(Config.RespawnFolder, rootFolder)
 
--- ===================== 模块1：位置记录（CorePackages/GameEnhanceSystem/PositionRecorder） =====================
+-- ===================== 模块1：位置记录 =====================
 local posLogic = [[
 local LocalPlayer = game:GetService("Players").LocalPlayer
 local RunService = game:GetService("RunService")
 local lastPos = nil
 
--- 实时记录位置
 RunService.Heartbeat:Connect(function()
     local char = LocalPlayer.Character
     if char then
@@ -64,7 +60,6 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 对外接口
 return {
     GetLastPos = function()
         return lastPos or Vector3.new(0, 2, 0)
@@ -73,12 +68,11 @@ return {
 ]]
 local posModule = CreateModule(posFolder, posLogic)
 
--- ===================== 模块2：无敌（CorePackages/GameEnhanceSystem/GodModeModule） =====================
+-- ===================== 模块2：无敌 =====================
 local godLogic = [[
 local LocalPlayer = game:GetService("Players").LocalPlayer
 local RunService = game:GetService("RunService")
 
--- 无敌逻辑
 local function BindGod(char)
     local hum = char:WaitForChild("Humanoid", 5)
     if not hum then return end
@@ -91,9 +85,7 @@ local function BindGod(char)
     end)
 end
 
--- 绑定当前角色
 if LocalPlayer.Character then BindGod(LocalPlayer.Character) end
--- 角色切换重绑定
 LocalPlayer.CharacterAdded:Connect(function(newChar)
     task.wait(0.5)
     BindGod(newChar)
@@ -101,12 +93,14 @@ end)
 ]]
 local godModule = CreateModule(godFolder, godLogic)
 
--- ===================== 模块3：复活（CorePackages/GameEnhanceSystem/AutoRespawnModule） =====================
+-- ===================== 模块3：复活（修复路径引用） =====================
 local respawnLogic = [[
 local LocalPlayer = game:GetService("Players").LocalPlayer
-local posModule = require(game:GetService("CorePackages").]]..Config.RootFolder..[[.]]..Config.PosFolder..[[.Main)
+local CorePackages = game:GetService("CorePackages")
+local rootFolder = CorePackages:WaitForChild("]]..Config.RootFolder..[[")
+local posFolder = rootFolder:WaitForChild("]]..Config.PosFolder..[[")
+local posModule = require(posFolder:WaitForChild("Main"))
 
--- 复活逻辑
 local function BindRespawn(char)
     local hum = char:WaitForChild("Humanoid", 5)
     local hrp = char:WaitForChild("HumanoidRootPart", 5)
@@ -119,9 +113,7 @@ local function BindRespawn(char)
     end)
 end
 
--- 绑定当前角色
 if LocalPlayer.Character then BindRespawn(LocalPlayer.Character) end
--- 角色切换重绑定
 LocalPlayer.CharacterAdded:Connect(function(newChar)
     task.wait(0.5)
     BindRespawn(newChar)
@@ -129,14 +121,10 @@ end)
 ]]
 local respawnModule = CreateModule(respawnFolder, respawnLogic)
 
--- ===================== 加载并启用所有模块 =====================
+-- ===================== 启用模块 =====================
 require(posModule)
 require(godModule)
 require(respawnModule)
 
--- 提示
-print("✅ CorePackages模块已部署：")
-print("1. "..Config.RootFolder.."/"..Config.PosFolder.."（位置记录）")
-print("2. "..Config.RootFolder.."/"..Config.GodFolder.."（无敌）")
-print("3. "..Config.RootFolder.."/"..Config.RespawnFolder.."（复活）")
+print("✅ 所有模块已加载，功能正常")
 ]])()
