@@ -1,0 +1,585 @@
+local player = game.Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+-- 配置选项
+local Config = {
+    GodModeEnabled = true,
+    AutoHealEnabled = true,
+    InstantKillEnabled = false,
+    NoClipEnabled = false,
+    SpeedMultiplier = 1,
+    JumpPowerMultiplier = 1,
+    AutoRespawn = true,
+    ShowStatus = true,
+    HealthRegenRate = 100,
+    UIScale = 1,  -- UI缩放比例
+}
+
+-- 状态变量
+local isProcessing = false
+local currentCharacter = nil
+local currentHumanoid = nil
+local noclipConnection = nil
+local gui = nil
+local touchControls = {}
+local touchButtons = {}
+local isDragging = false
+local dragOffset = Vector2.new(0, 0)
+
+-- 手机端UI颜色方案
+local Colors = {
+    Background = Color3.fromRGB(30, 30, 40),
+    Button = Color3.fromRGB(60, 60, 80),
+    ButtonActive = Color3.fromRGB(80, 120, 200),
+    Text = Color3.fromRGB(255, 255, 255),
+    Success = Color3.fromRGB(100, 255, 100),
+    Warning = Color3.fromRGB(255, 200, 100),
+    Danger = Color3.fromRGB(255, 100, 100),
+}
+
+-- 创建手机端优化UI
+local function createMobileUI()
+    if gui and gui.Parent then gui:Destroy() end
+    
+    -- 主界面
+    gui = Instance.new("ScreenGui")
+    gui.Name = "GodModeMobileUI"
+    gui.Parent = player:WaitForChild("PlayerGui")
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    -- 主容器（可拖动）
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 320, 0, 400)
+    mainFrame.Position = UDim2.new(0.5, -160, 0.5, -200)
+    mainFrame.BackgroundColor3 = Colors.Background
+    mainFrame.BackgroundTransparency = 0.15
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = gui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = mainFrame
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(100, 100, 150)
+    stroke.Thickness = 2
+    stroke.Parent = mainFrame
+    
+    -- 标题栏（拖动区域）
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1, 0, 0, 40)
+    titleBar.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+    titleBar.BackgroundTransparency = 0.1
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = mainFrame
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 12)
+    titleCorner.Parent = titleBar
+    
+    local titleText = Instance.new("TextLabel")
+    titleText.Text = "⚡ 上帝模式 ⚡"
+    titleText.Size = UDim2.new(1, -10, 1, 0)
+    titleText.Position = UDim2.new(0, 10, 0, 0)
+    titleText.BackgroundTransparency = 1
+    titleText.TextColor3 = Color3.fromRGB(255, 215, 0)
+    titleText.Font = Enum.Font.GothamBold
+    titleText.TextSize = 18
+    titleText.Parent = titleBar
+    
+    -- 关闭按钮
+    local closeButton = Instance.new("TextButton")
+    closeButton.Size = UDim2.new(0, 30, 0, 30)
+    closeButton.Position = UDim2.new(1, -35, 0.5, -15)
+    closeButton.BackgroundColor3 = Color3.fromRGB(255, 80, 80)
+    closeButton.Text = "×"
+    closeButton.TextColor3 = Color3.white
+    closeButton.Font = Enum.Font.GothamBold
+    closeButton.TextSize = 20
+    closeButton.Parent = titleBar
+    
+    local closeCorner = Instance.new("UICorner")
+    closeCorner.CornerRadius = UDim.new(1, 0)
+    closeCorner.Parent = closeButton
+    
+    -- 内容区域
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Size = UDim2.new(1, -20, 1, -60)
+    contentFrame.Position = UDim2.new(0, 10, 0, 50)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Parent = mainFrame
+    
+    -- 状态显示
+    local statusFrame = Instance.new("Frame")
+    statusFrame.Size = UDim2.new(1, 0, 0, 100)
+    statusFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    statusFrame.BackgroundTransparency = 0.2
+    statusFrame.BorderSizePixel = 0
+    statusFrame.Parent = contentFrame
+    
+    local statusCorner = Instance.new("UICorner")
+    statusCorner.CornerRadius = UDim.new(0, 8)
+    statusCorner.Parent = statusFrame
+    
+    local statusText = Instance.new("TextLabel")
+    statusText.Name = "StatusText"
+    statusText.Size = UDim2.new(1, -10, 1, -10)
+    statusText.Position = UDim2.new(0, 5, 0, 5)
+    statusText.BackgroundTransparency = 1
+    statusText.TextColor3 = Colors.Text
+    statusText.Font = Enum.Font.Gotham
+    statusText.TextSize = 14
+    statusText.TextXAlignment = Enum.TextXAlignment.Left
+    statusText.TextYAlignment = Enum.TextYAlignment.Top
+    statusText.Text = "正在加载..."
+    statusText.Parent = statusFrame
+    
+    -- 按钮容器
+    local buttonContainer = Instance.new("Frame")
+    buttonContainer.Size = UDim2.new(1, 0, 0, 240)
+    buttonContainer.Position = UDim2.new(0, 0, 0, 110)
+    buttonContainer.BackgroundTransparency = 1
+    buttonContainer.Parent = contentFrame
+    
+    -- 创建功能按钮（2x4网格）
+    local buttonNames = {
+        {name = "上帝模式", key = "GodModeEnabled", color = Colors.Success},
+        {name = "穿墙模式", key = "NoClipEnabled", color = Colors.Warning},
+        {name = "一击必杀", key = "InstantKillEnabled", color = Colors.Danger},
+        {name = "自动治疗", key = "AutoHealEnabled", color = Colors.Success},
+        {name = "速度 +", key = "SpeedUp", color = Colors.Button},
+        {name = "速度 -", key = "SpeedDown", color = Colors.Button},
+        {name = "跳跃 +", key = "JumpUp", color = Colors.Button},
+        {name = "跳跃 -", key = "JumpDown", color = Colors.Button},
+    }
+    
+    for i, buttonInfo in ipairs(buttonNames) do
+        local row = math.floor((i-1)/2)
+        local col = (i-1) % 2
+        
+        local button = Instance.new("TextButton")
+        button.Name = buttonInfo.key
+        button.Size = UDim2.new(0.48, 0, 0, 50)
+        button.Position = UDim2.new(col * 0.52, 5, 0, row * 60)
+        button.BackgroundColor3 = buttonInfo.color
+        button.BackgroundTransparency = 0.2
+        button.Text = buttonInfo.name
+        button.TextColor3 = Colors.Text
+        button.Font = Enum.Font.GothamSemibold
+        button.TextSize = 14
+        button.Parent = buttonContainer
+        
+        local buttonCorner = Instance.new("UICorner")
+        buttonCorner.CornerRadius = UDim.new(0, 8)
+        buttonCorner.Parent = button
+        
+        local buttonStroke = Instance.new("UIStroke")
+        buttonStroke.Color = Color3.fromRGB(255, 255, 255)
+        buttonStroke.Thickness = 1
+        buttonStroke.Transparency = 0.5
+        buttonStroke.Parent = button
+        
+        touchButtons[buttonInfo.key] = button
+    end
+    
+    -- 快捷工具栏（屏幕底部）
+    local quickBar = Instance.new("Frame")
+    quickBar.Size = UDim2.new(1, -40, 0, 60)
+    quickBar.Position = UDim2.new(0.5, -160, 1, -70)
+    quickBar.AnchorPoint = Vector2.new(0.5, 0)
+    quickBar.BackgroundColor3 = Colors.Background
+    quickBar.BackgroundTransparency = 0.2
+    quickBar.BorderSizePixel = 0
+    quickBar.Parent = gui
+    
+    local quickCorner = Instance.new("UICorner")
+    quickCorner.CornerRadius = UDim.new(0, 12)
+    quickCorner.Parent = quickBar
+    
+    -- 快速切换按钮
+    local quickButtons = {
+        {name = "GM", key = "quickGodMode", tooltip = "上帝模式"},
+        {name = "NC", key = "quickNoClip", tooltip = "穿墙模式"},
+        {name = "IK", key = "quickInstantKill", tooltip = "一击必杀"},
+        {name = "HIDE", key = "quickHide", tooltip = "隐藏界面"},
+    }
+    
+    for i, buttonInfo in ipairs(quickButtons) do
+        local button = Instance.new("TextButton")
+        button.Name = buttonInfo.key
+        button.Size = UDim2.new(0.2, -10, 0.8, 0)
+        button.Position = UDim2.new((i-1) * 0.25, 5, 0.1, 0)
+        button.BackgroundColor3 = Colors.Button
+        button.BackgroundTransparency = 0.2
+        button.Text = buttonInfo.name
+        button.TextColor3 = Colors.Text
+        button.Font = Enum.Font.GothamBold
+        button.TextSize = 16
+        button.Parent = quickBar
+        
+        local buttonCorner = Instance.new("UICorner")
+        buttonCorner.CornerRadius = UDim.new(0, 8)
+        buttonCorner.Parent = button
+        
+        touchButtons[buttonInfo.key] = button
+    end
+    
+    -- 触摸事件处理
+    -- 拖动标题栏
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = true
+            local startPos = input.Position
+            local framePos = mainFrame.AbsolutePosition
+            
+            dragOffset = framePos - startPos
+            
+            -- 视觉反馈
+            local tween = TweenService:Create(titleBar, TweenInfo.new(0.1), {
+                BackgroundTransparency = 0.3
+            })
+            tween:Play()
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if isDragging and input.UserInputType == Enum.UserInputType.Touch then
+            local newPos = UDim2.new(
+                0, input.Position.X + dragOffset.X,
+                0, input.Position.Y + dragOffset.Y
+            )
+            mainFrame.Position = newPos
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = false
+            local tween = TweenService:Create(titleBar, TweenInfo.new(0.1), {
+                BackgroundTransparency = 0.1
+            })
+            tween:Play()
+        end
+    end)
+    
+    -- 关闭按钮
+    closeButton.MouseButton1Click:Connect(function()
+        Config.ShowStatus = false
+        gui.Enabled = false
+    end)
+    
+    return statusText
+end
+
+-- 更新状态显示
+local function updateStatus()
+    if not gui or not gui.Enabled then return end
+    
+    local statusText = gui:FindFirstChild("StatusText", true)
+    if statusText then
+        local text = string.format(
+            "状态:\n%s 上帝模式\n%s 穿墙模式\n%s 一击必杀\n%s 自动治疗\n\n属性:\n速度: %.1fx\n跳跃: %.1fx\n\n%s",
+            Config.GodModeEnabled and "✅" or "❌",
+            Config.NoClipEnabled and "✅" or "❌",
+            Config.InstantKillEnabled and "✅" or "❌",
+            Config.AutoHealEnabled and "✅" or "❌",
+            Config.SpeedMultiplier,
+            Config.JumpPowerMultiplier,
+            os.date("%H:%M:%S")
+        )
+        statusText.Text = text
+    end
+    
+    -- 更新按钮状态
+    for key, button in pairs(touchButtons) do
+        if key == "GodModeEnabled" then
+            button.BackgroundColor3 = Config.GodModeEnabled and Colors.Success or Colors.Button
+            button.Text = Config.GodModeEnabled and "上帝模式 ✅" or "上帝模式 ❌"
+        elseif key == "NoClipEnabled" then
+            button.BackgroundColor3 = Config.NoClipEnabled and Colors.Warning or Colors.Button
+            button.Text = Config.NoClipEnabled and "穿墙模式 ✅" or "穿墙模式 ❌"
+        elseif key == "InstantKillEnabled" then
+            button.BackgroundColor3 = Config.InstantKillEnabled and Colors.Danger or Colors.Button
+            button.Text = Config.InstantKillEnabled and "一击必杀 ✅" or "一击必杀 ❌"
+        elseif key == "AutoHealEnabled" then
+            button.BackgroundColor3 = Config.AutoHealEnabled and Colors.Success or Colors.Button
+            button.Text = Config.AutoHealEnabled and "自动治疗 ✅" or "自动治疗 ❌"
+        elseif key == "quickGodMode" then
+            button.BackgroundColor3 = Config.GodModeEnabled and Colors.Success or Colors.Button
+        elseif key == "quickNoClip" then
+            button.BackgroundColor3 = Config.NoClipEnabled and Colors.Warning or Colors.Button
+        elseif key == "quickInstantKill" then
+            button.BackgroundColor3 = Config.InstantKillEnabled and Colors.Danger or Colors.Button
+        end
+    end
+end
+
+-- 设置触摸按钮事件
+local function setupTouchControls()
+    -- 上帝模式按钮
+    if touchButtons.GodModeEnabled then
+        touchButtons.GodModeEnabled.MouseButton1Click:Connect(function()
+            Config.GodModeEnabled = not Config.GodModeEnabled
+            if Config.GodModeEnabled then
+                Config.AutoHealEnabled = true
+            end
+            updateStatus()
+        end)
+    end
+    
+    -- 穿墙模式按钮
+    if touchButtons.NoClipEnabled then
+        touchButtons.NoClipEnabled.MouseButton1Click:Connect(function()
+            Config.NoClipEnabled = not Config.NoClipEnabled
+            updateStatus()
+        end)
+    end
+    
+    -- 一击必杀按钮
+    if touchButtons.InstantKillEnabled then
+        touchButtons.InstantKillEnabled.MouseButton1Click:Connect(function()
+            Config.InstantKillEnabled = not Config.InstantKillEnabled
+            updateStatus()
+        end)
+    end
+    
+    -- 自动治疗按钮
+    if touchButtons.AutoHealEnabled then
+        touchButtons.AutoHealEnabled.MouseButton1Click:Connect(function()
+            Config.AutoHealEnabled = not Config.AutoHealEnabled
+            updateStatus()
+        end)
+    end
+    
+    -- 速度增加
+    if touchButtons.SpeedUp then
+        touchButtons.SpeedUp.MouseButton1Click:Connect(function()
+            Config.SpeedMultiplier = Config.SpeedMultiplier + 0.5
+            if currentHumanoid then
+                enhanceAttributes(currentHumanoid)
+            end
+            updateStatus()
+        end)
+    end
+    
+    -- 速度减少
+    if touchButtons.SpeedDown then
+        touchButtons.SpeedDown.MouseButton1Click:Connect(function()
+            Config.SpeedMultiplier = math.max(0.5, Config.SpeedMultiplier - 0.5)
+            if currentHumanoid then
+                enhanceAttributes(currentHumanoid)
+            end
+            updateStatus()
+        end)
+    end
+    
+    -- 跳跃增加
+    if touchButtons.JumpUp then
+        touchButtons.JumpUp.MouseButton1Click:Connect(function()
+            Config.JumpPowerMultiplier = Config.JumpPowerMultiplier + 0.5
+            if currentHumanoid then
+                enhanceAttributes(currentHumanoid)
+            end
+            updateStatus()
+        end)
+    end
+    
+    -- 跳跃减少
+    if touchButtons.JumpDown then
+        touchButtons.JumpDown.MouseButton1Click:Connect(function()
+            Config.JumpPowerMultiplier = math.max(0.5, Config.JumpPowerMultiplier - 0.5)
+            if currentHumanoid then
+                enhanceAttributes(currentHumanoid)
+            end
+            updateStatus()
+        end)
+    end
+    
+    -- 快捷工具栏按钮
+    if touchButtons.quickGodMode then
+        touchButtons.quickGodMode.MouseButton1Click:Connect(function()
+            Config.GodModeEnabled = not Config.GodModeEnabled
+            if Config.GodModeEnabled then
+                Config.AutoHealEnabled = true
+            end
+            updateStatus()
+        end)
+    end
+    
+    if touchButtons.quickNoClip then
+        touchButtons.quickNoClip.MouseButton1Click:Connect(function()
+            Config.NoClipEnabled = not Config.NoClipEnabled
+            updateStatus()
+        end)
+    end
+    
+    if touchButtons.quickInstantKill then
+        touchButtons.quickInstantKill.MouseButton1Click:Connect(function()
+            Config.InstantKillEnabled = not Config.InstantKillEnabled
+            updateStatus()
+        end)
+    end
+    
+    if touchButtons.quickHide then
+        touchButtons.quickHide.MouseButton1Click:Connect(function()
+            gui.Enabled = not gui.Enabled
+        end)
+    end
+end
+
+-- 以下是原有的功能函数（简化版）
+local function setupInstantKill(humanoid, character)
+    if not Config.InstantKillEnabled then return end
+    
+    for _, part in pairs(character:GetChildren()) do
+        if part:IsA("BasePart") then
+            part.Touched:Connect(function(otherPart)
+                if not Config.InstantKillEnabled then return end
+                
+                local otherCharacter = otherPart.Parent
+                local otherHumanoid = otherCharacter:FindFirstChild("Humanoid")
+                
+                if otherHumanoid and otherCharacter ~= character then
+                    otherHumanoid.Health = 0
+                end
+            end)
+        end
+    end
+end
+
+local function enableNoClip(character)
+    if not Config.NoClipEnabled then return end
+    
+    if noclipConnection then
+        noclipConnection:Disconnect()
+        noclipConnection = nil
+    end
+    
+    noclipConnection = RunService.Stepped:Connect(function()
+        if not character or not Config.NoClipEnabled then
+            if noclipConnection then
+                noclipConnection:Disconnect()
+                noclipConnection = nil
+            end
+            return
+        end
+        
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+
+local function enhanceAttributes(humanoid)
+    if not humanoid then return end
+    
+    if not humanoid:GetAttribute("OriginalWalkSpeed") then
+        humanoid:SetAttribute("OriginalWalkSpeed", humanoid.WalkSpeed)
+    end
+    if not humanoid:GetAttribute("OriginalJumpPower") then
+        humanoid:SetAttribute("OriginalJumpPower", humanoid.JumpPower)
+    end
+    
+    humanoid.WalkSpeed = humanoid:GetAttribute("OriginalWalkSpeed") * Config.SpeedMultiplier
+    humanoid.JumpPower = humanoid:GetAttribute("OriginalJumpPower") * Config.JumpPowerMultiplier
+end
+
+local function setupAutoHeal(humanoid)
+    if not Config.AutoHealEnabled then return end
+    
+    RunService.Heartbeat:Connect(function(deltaTime)
+        if not humanoid or humanoid.Health <= 0 then return end
+        
+        if Config.GodModeEnabled and Config.AutoHealEnabled then
+            if humanoid.Health < humanoid.MaxHealth then
+                humanoid.Health = math.min(
+                    humanoid.MaxHealth,
+                    humanoid.Health + (Config.HealthRegenRate * deltaTime)
+                )
+            end
+            
+            if humanoid.Health <= 0 then
+                humanoid.Health = humanoid.MaxHealth
+            end
+        end
+    end)
+end
+
+local function onCharacterAdded(character)
+    currentCharacter = character
+    local humanoid = character:WaitForChild("Humanoid")
+    currentHumanoid = humanoid
+    
+    if Config.GodModeEnabled then
+        humanoid.Health = humanoid.MaxHealth
+    end
+    
+    enhanceAttributes(humanoid)
+    setupAutoHeal(humanoid)
+    setupInstantKill(humanoid, character)
+    enableNoClip(character)
+    
+    humanoid.Died:Connect(function()
+        if Config.GodModeEnabled and Config.AutoRespawn then
+            if not isProcessing then
+                isProcessing = true
+                task.wait(0.2)
+                player:LoadCharacter()
+                isProcessing = false
+            end
+        end
+    end)
+end
+
+-- 初始化
+player.CharacterAdded:Connect(onCharacterAdded)
+
+if player.Character then
+    task.spawn(function()
+        onCharacterAdded(player.Character)
+    end)
+end
+
+-- 创建移动端UI
+task.wait(2) -- 等待游戏加载
+createMobileUI()
+setupTouchControls()
+updateStatus()
+
+-- 添加屏幕边缘呼出按钮（当UI隐藏时）
+local showUIButton = Instance.new("TextButton")
+showUIButton.Size = UDim2.new(0, 60, 0, 60)
+showUIButton.Position = UDim2.new(0, 10, 0.5, -30)
+showUIButton.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
+showUIButton.BackgroundTransparency = 0.2
+showUIButton.Text = "⚡"
+showUIButton.TextColor3 = Color3.white
+showUIButton.Font = Enum.Font.GothamBold
+showUIButton.TextSize = 24
+showUIButton.Visible = false
+showUIButton.Parent = gui
+
+local buttonCorner = Instance.new("UICorner")
+buttonCorner.CornerRadius = UDim.new(1, 0)
+buttonCorner.Parent = showUIButton
+
+showUIButton.MouseButton1Click:Connect(function()
+    gui.Enabled = true
+    showUIButton.Visible = false
+end)
+
+-- 监听UI隐藏状态
+RunService.Heartbeat:Connect(function()
+    if gui then
+        showUIButton.Visible = not gui.Enabled
+    end
+end)
+
+print("📱 手机端上帝模式已加载！")
+print("界面已创建，点击屏幕边缘的⚡按钮可显示界面")
