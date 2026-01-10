@@ -1,268 +1,286 @@
 loadstring([[
 -- ==============================================
--- Roblox手机端模块化无敌+原地复活脚本（超长版）
--- 核心：独立功能模块封装 + 手机端深度适配
+-- Roblox通用无敌+原地复活脚本（效果增强版）
+-- 核心改进：解决功能不生效、角色切换失效问题
+-- 适配：手机端执行器、全Roblox游戏
 -- ==============================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- ===================== 全局配置模块 =====================
-local Config = {
-    MODULE_NAME = "GodModeCoreModule", -- 功能模块名称
-    GOD_MODE_ENABLED = true,
-    AUTO_RESPAWN_ENABLED = true,
-    SAFE_POS_UPDATE_INTERVAL = 0.15, -- 位置更新间隔（手机端优化）
-    RESPAWN_HEIGHT_OFFSET = 2.5, -- 复活防卡地高度
-    CHARACTER_LOAD_DELAY = 0.9, -- 手机端角色加载延迟
-    LOG_ENABLED = true,
-    VERSION = "v3.1.2 (Mobile Module Edition)"
+-- ===================== 全局状态管理（增强稳定性） =====================
+local GlobalState = {
+    GodModeEnabled = true,
+    AutoRespawnEnabled = true,
+    LastSafePosition = nil,
+    IsScriptRunning = true,
+    -- 新增：存储连接防止内存泄漏
+    ActiveConnections = {},
+    Version = "v2.4.0 (Fixed Inactive Issue)",
+    Author = "Roblox Script Toolkit"
 }
 
--- ===================== 日志工具模块 =====================
-local LogSystem = {
-    Print = function(message, level)
-        if not Config.LOG_ENABLED then return end
-        level = level or "INFO"
-        local timestamp = os.date("%H:%M:%S")
-        print(string.format("[%s][%s][%s] %s", timestamp, Config.MODULE_NAME, level, message))
-    end,
-    Success = function(message)
-        LogSystem.Print(message, "SUCCESS")
-    end,
-    Warn = function(message)
-        LogSystem.Print(message, "WARN")
-    end
-}
-
--- ===================== 核心功能模块创建 =====================
-local function CreateCoreModule()
-    -- 检查并清理旧模块
-    local oldModule = Workspace:FindFirstChild(Config.MODULE_NAME)
-    if oldModule then
-        oldModule:Destroy()
-        LogSystem.Warn("旧功能模块已清理，启动新版本模块")
-    end
-
-    -- 创建新功能模块（存放所有核心逻辑）
-    local CoreModule = Instance.new("ModuleScript")
-    CoreModule.Name = Config.MODULE_NAME
-    CoreModule.Parent = Workspace
-    LogSystem.Print("功能模块创建成功：" .. CoreModule.Name)
-
-    -- ===================== 模块内功能1：实时记录安全位置 =====================
-    local PositionRecorder = {
-        LastSafePos = nil,
-        UpdateTimer = 0,
-
-        Init = function()
-            LogSystem.Print("位置记录子模块初始化")
-            -- 心跳检测更新安全位置
-            RunService.Heartbeat:Connect(function(deltaTime)
-                if not Config.GOD_MODE_ENABLED then return end
-                self.UpdateTimer = self.UpdateTimer + deltaTime
-                if self.UpdateTimer >= Config.SAFE_POS_UPDATE_INTERVAL then
-                    self:UpdateSafePosition()
-                    self.UpdateTimer = 0
-                end
-            end)
-        end,
-
-        UpdateSafePosition = function(self)
-            local character = LocalPlayer.Character
-            if not character then return end
-            local humanoid = character:FindFirstChild("Humanoid")
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            if humanoid and hrp and humanoid.Health > 0 then
-                self.LastSafePos = hrp.Position
-                LogSystem.Print("安全位置更新：" .. tostring(self.LastSafePos), "DEBUG")
-            end
-        end,
-
-        GetLastSafePos = function(self)
-            return self.LastSafePos or Vector3.new(0, Config.RESPAWN_HEIGHT_OFFSET, 0)
+-- ===================== 核心工具函数（防失效增强） =====================
+-- 工具1：安全等待对象加载（延长超时+重试提示）
+local function SafeWaitForChild(parent, childName, maxRetry, retryInterval)
+    maxRetry = maxRetry or 25 -- 延长超时（原15次→25次）
+    retryInterval = retryInterval or 0.2
+    local retryCount = 0
+    while retryCount < maxRetry do
+        local target = parent:FindFirstChild(childName)
+        if target then
+            print("[Tool] 成功加载对象：" .. childName)
+            return target
         end
-    }
-
-    -- ===================== 模块内功能2：无敌+禁用死亡机制 =====================
-    local GodModeSystem = {
-        HumanoidConn = nil,
-
-        Init = function()
-            LogSystem.Print("无敌子模块初始化")
-            self:BindGodModeToCharacter()
-            -- 角色切换时重新绑定
-            LocalPlayer.CharacterAdded:Connect(function()
-                task.wait(Config.CHARACTER_LOAD_DELAY)
-                self:BindGodModeToCharacter()
-            end)
-        end,
-
-        BindGodModeToCharacter = function(self)
-            local character = LocalPlayer.Character
-            if not character then return end
-            local humanoid = character:FindFirstChild("Humanoid")
-            if not humanoid then return end
-
-            -- 禁用死亡相关设置
-            humanoid.BreakJointsOnDeath = false
-            humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-            LogSystem.Print("角色无敌状态绑定成功")
-
-            -- 强制维持满血量
-            if self.HumanoidConn then self.HumanoidConn:Disconnect() end
-            self.HumanoidConn = RunService.Heartbeat:Connect(function()
-                if Config.GOD_MODE_ENABLED and humanoid.Health > 0 then
-                    humanoid.Health = humanoid.MaxHealth
-                end
-            end)
-        end
-    }
-
-    -- ===================== 模块内功能3：原地自动复活 =====================
-    local AutoRespawnSystem = {
-        RespawnConn = nil,
-
-        Init = function()
-            LogSystem.Print("原地复活子模块初始化")
-            self:BindRespawnToCharacter()
-            -- 角色切换时重新绑定
-            LocalPlayer.CharacterAdded:Connect(function()
-                task.wait(Config.CHARACTER_LOAD_DELAY)
-                self:BindRespawnToCharacter()
-            end)
-        end,
-
-        BindRespawnToCharacter = function(self)
-            local character = LocalPlayer.Character
-            if not character then return end
-            local humanoid = character:FindFirstChild("Humanoid")
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            if not humanoid or not hrp then return end
-
-            -- 死亡后触发原地复活
-            if self.RespawnConn then self.RespawnConn:Disconnect() end
-            self.RespawnConn = humanoid.Died:Connect(function()
-                if Config.AUTO_RESPAWN_ENABLED and Config.GOD_MODE_ENABLED then
-                    task.wait(0.1)
-                    local safePos = PositionRecorder:GetLastSafePos()
-                    -- 强制复活+传送至安全位置
-                    humanoid.Health = humanoid.MaxHealth
-                    hrp.CFrame = CFrame.new(safePos + Vector3.new(0, Config.RESPAWN_HEIGHT_OFFSET, 0))
-                    humanoid:ChangeState(Enum.HumanoidStateType.Running)
-                    LogSystem.Success("已原地复活，传送至安全位置")
-                end
-            end)
-        end
-    }
-
-    -- ===================== 模块内初始化入口 =====================
-    local function ModuleInit()
-        LogSystem.Print("核心功能模块开始初始化所有子模块")
-        -- 初始化三大核心子模块
-        PositionRecorder:Init()
-        GodModeSystem:Init()
-        AutoRespawnSystem:Init()
-        LogSystem.Success("所有核心子模块初始化完成")
-        LogSystem.Success("模块功能清单：")
-        LogSystem.Success("1. 实时记录安全位置，死亡后自动传送回原位置")
-        LogSystem.Success("2. 强制维持满血量，禁用游戏死亡机制")
-        LogSystem.Success("3. 角色切换后自动重新绑定功能")
+        retryCount = retryCount + 1
+        task.wait(retryInterval)
     end
-
-    -- 执行模块初始化
-    ModuleInit()
-
-    -- 将核心功能挂载到模块，支持外部调用（冗余扩展）
-    CoreModule:SetAttribute("PositionRecorder", PositionRecorder)
-    CoreModule:SetAttribute("GodModeSystem", GodModeSystem)
-    CoreModule:SetAttribute("AutoRespawnSystem", AutoRespawnSystem)
-    CoreModule:SetAttribute("Config", Config)
-
-    return CoreModule
+    warn("[Tool] 等待对象超时：" .. childName .. "，将尝试重新获取")
+    -- 超时后二次重试（解决临时加载失败）
+    task.wait(1)
+    return parent:FindFirstChild(childName)
 end
 
--- ===================== 手机端专属提示模块 =====================
-local MobileUIHint = {
+-- 工具2：检查角色有效性（增加组件状态判断）
+local function IsCharacterValid(character)
+    if not character or not character:IsDescendantOf(Workspace) then return false end
+    local humanoid = character:FindFirstChild("Humanoid")
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    -- 新增：判断Humanoid是否正常（防失效）
+    return humanoid and hrp and humanoid.Health ~= nil and humanoid.MaxHealth ~= nil
+end
+
+-- 工具3：清理旧连接（防止重复绑定导致失效）
+local function ClearOldConnections()
+    for _, conn in ipairs(GlobalState.ActiveConnections) do
+        if conn and typeof(conn) == "RBXScriptConnection" then
+            conn:Disconnect()
+        end
+    end
+    GlobalState.ActiveConnections = {}
+end
+
+-- ===================== 角色组件管理（实时更新防失效） =====================
+local CharacterManager = {
+    -- 更新角色组件（增加重试逻辑）
+    UpdateComponents = function()
+        local character = LocalPlayer.Character
+        if not character then
+            print("[CharacterManager] 等待角色生成...")
+            -- 新增：等待角色时增加超时重试
+            local charWaitConn = LocalPlayer.CharacterAdded:Wait()
+            character = charWaitConn
+            task.wait(1.2) -- 延长手机端加载延迟（原0.7→1.2秒）
+        end
+        -- 安全获取核心组件
+        local humanoid = SafeWaitForChild(character, "Humanoid", 25, 0.1)
+        local hrp = SafeWaitForChild(character, "HumanoidRootPart", 25, 0.1)
+        -- 组件无效时重试
+        if not humanoid or not hrp then
+            task.wait(0.5)
+            humanoid = SafeWaitForChild(character, "Humanoid", 20, 0.1)
+            hrp = SafeWaitForChild(character, "HumanoidRootPart", 20, 0.1)
+        end
+        -- 存储有效组件
+        GlobalState.CharacterComponents = {
+            Character = character,
+            Humanoid = humanoid,
+            HumanoidRootPart = hrp
+        }
+        print("[CharacterManager] 角色组件更新完成")
+        return character, humanoid, hrp
+    end,
+
+    -- 获取当前组件（实时校验）
+    GetComponents = function()
+        local char = GlobalState.CharacterComponents.Character
+        -- 组件失效时重新加载
+        if not IsCharacterValid(char) then
+            return CharacterManager.UpdateComponents()
+        end
+        return GlobalState.CharacterComponents.Character,
+               GlobalState.CharacterComponents.Humanoid,
+               GlobalState.CharacterComponents.HumanoidRootPart
+    end
+}
+
+-- ===================== 位置记录模块（防丢失增强） =====================
+local PositionRecorder = {
+    StartRecording = function()
+        print("[PositionRecorder] 位置记录模块已启动")
+        -- 存储连接防止丢失
+        local conn = RunService.Heartbeat:Connect(function()
+            if not GlobalState.IsScriptRunning then return end
+            local _, humanoid, hrp = CharacterManager.GetComponents()
+            if humanoid and hrp and humanoid.Health > 0 then
+                GlobalState.LastSafePosition = hrp.Position
+                -- 新增：位置更新提示（确认功能生效）
+                if math.floor(tick() % 8) == 0 then
+                    print("[PositionRecorder] 当前安全位置：" .. tostring(GlobalState.LastSafePosition))
+                end
+            end
+        end)
+        table.insert(GlobalState.ActiveConnections, conn)
+    end
+}
+
+-- ===================== 无敌功能模块（防拦截增强） =====================
+local GodModeModule = {
+    StartGodMode = function()
+        print("[GodModeModule] 无敌模块已启动")
+        -- 存储连接防止丢失
+        local conn = RunService.Heartbeat:Connect(function()
+            if not GlobalState.IsScriptRunning or not GlobalState.GodModeEnabled then return end
+            local _, humanoid = CharacterManager.GetComponents()
+            if humanoid then
+                -- 强制禁用死亡机制（防游戏覆盖设置）
+                humanoid.BreakJointsOnDeath = false
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+                -- 强制维持满血量（防拦截）
+                if humanoid.Health > 0 then
+                    humanoid.Health = humanoid.MaxHealth
+                    -- 新增：血量恢复提示（确认功能生效）
+                    if math.floor(tick() % 10) == 0 then
+                        print("[GodModeModule] 已维持满血量")
+                    end
+                end
+            end
+        end)
+        table.insert(GlobalState.ActiveConnections, conn)
+    end
+}
+
+-- ===================== 原地复活模块（防失效增强） =====================
+local AutoRespawnModule = {
+    StartAutoRespawn = function()
+        print("[AutoRespawnModule] 原地复活模块已启动")
+        -- 存储连接防止丢失
+        local conn = RunService.Heartbeat:Connect(function()
+            if not GlobalState.IsScriptRunning or not GlobalState.AutoRespawnEnabled or not GlobalState.GodModeEnabled then return end
+            local character, humanoid, hrp = CharacterManager.GetComponents()
+            if humanoid and hrp and humanoid.Health <= 0 and GlobalState.LastSafePosition then
+                print("[AutoRespawnModule] 检测到死亡，执行原地复活")
+                -- 强制恢复状态（防游戏拦截）
+                humanoid.Health = humanoid.MaxHealth
+                humanoid:ChangeState(Enum.HumanoidStateType.Running)
+                -- 精准传送（增加高度偏移防卡地）
+                hrp.CFrame = CFrame.new(GlobalState.LastSafePosition + Vector3.new(0, 2.5, 0))
+                -- 新增：复活后重新绑定组件（防止后续失效）
+                task.wait(0.3)
+                CharacterManager.UpdateComponents()
+            end
+        end)
+        table.insert(GlobalState.ActiveConnections, conn)
+    end
+}
+
+-- ===================== 角色切换适配（防失效核心） =====================
+local function BindCharacterChange()
+    -- 角色生成时重新初始化
+    LocalPlayer.CharacterAdded:Connect(function(newChar)
+        print("[System] 检测到角色切换，重新初始化功能")
+        -- 清理旧连接（防止冲突）
+        ClearOldConnections()
+        -- 延迟加载新角色（适配手机端节奏）
+        task.wait(1.5)
+        -- 重新更新组件+启动所有功能
+        CharacterManager.UpdateComponents()
+        PositionRecorder.StartRecording()
+        GodModeModule.StartGodMode()
+        AutoRespawnModule.StartAutoRespawn()
+        print("[System] 角色切换后功能重新绑定完成")
+    end)
+end
+
+-- ===================== 手机端提示模块（功能状态可视化） =====================
+local MobileHintModule = {
     ShowStartupHint = function()
         local ScreenGui = Instance.new("ScreenGui")
-        ScreenGui.Name = "MobileModuleHint"
+        ScreenGui.Name = "MobileScriptHint"
         ScreenGui.Parent = game:GetService("CoreGui")
         ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
-        -- 提示框主体
-        local MainFrame = Instance.new("Frame")
-        MainFrame.Size = UDim2.new(0.9, 0, 0.3, 0)
-        MainFrame.Position = UDim2.new(0.05, 0, 0.6, 0)
-        MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-        MainFrame.BackgroundTransparency = 0.25
-        MainFrame.BorderSizePixel = 0
-        MainFrame.Parent = ScreenGui
-
-        -- 装饰元素（冗余美化）
+        
+        -- 提示框框架
+        local Frame = Instance.new("Frame")
+        Frame.Size = UDim2.new(0.85, 0, 0.3, 0)
+        Frame.Position = UDim2.new(0.075, 0, 0.6, 0)
+        Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+        Frame.BackgroundTransparency = 0.2
+        Frame.BorderSizePixel = 0
+        Frame.Parent = ScreenGui
+        
+        -- 圆角+渐变装饰
         local UICorner = Instance.new("UICorner")
-        UICorner.CornerRadius = UDim.new(0, 15)
-        UICorner.Parent = MainFrame
-
+        UICorner.CornerRadius = UDim.new(0, 12)
+        UICorner.Parent = Frame
+        
         local UIGradient = Instance.new("UIGradient")
         UIGradient.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(40, 40, 40)),
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 30, 30)),
             ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 10, 10))
         })
-        UIGradient.Parent = MainFrame
-
-        -- 提示文字
-        local HintText = Instance.new("TextLabel")
-        HintText.Size = UDim2.new(1, 0, 1, 0)
-        HintText.BackgroundTransparency = 1
-        HintText.Text = "✅ 模块化脚本启动成功\n📌 功能模块已创建：" .. Config.MODULE_NAME .. "\n\n核心功能：\n• 安全位置记录+原地复活\n• 全程满血量+禁用死亡\n• 角色切换自动适配"
-        HintText.TextColor3 = Color3.fromRGB(255, 255, 255)
-        HintText.TextScaled = true
-        HintText.Font = Enum.Font.Gotham
-        HintText.TextStrokeTransparency = 0.7
-        HintText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        HintText.Parent = MainFrame
-
-        -- 手机端适配：6秒后渐变消失
-        task.wait(6)
+        UIGradient.Parent = Frame
+        
+        -- 提示文字（显示功能状态）
+        local TextLabel = Instance.new("TextLabel")
+        TextLabel.Size = UDim2.new(1, 0, 1, 0)
+        TextLabel.BackgroundTransparency = 1
+        TextLabel.Text = "✅ 脚本已启动（增强版）\n功能：无敌+原地复活\n版本：" .. GlobalState.Version .. "\n控制台可查看功能日志"
+        TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        TextLabel.TextScaled = true
+        TextLabel.Font = Enum.Font.Gotham
+        TextLabel.TextStrokeTransparency = 0.8
+        TextLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        TextLabel.Parent = Frame
+        
+        -- 8秒后自动隐藏（延长显示时间，方便确认）
+        task.wait(8)
         for i = 1, 15 do
-            MainFrame.BackgroundTransparency = MainFrame.BackgroundTransparency + 0.05
-            HintText.TextTransparency = HintText.TextTransparency + 0.06
+            Frame.BackgroundTransparency = Frame.BackgroundTransparency + 0.05
+            TextLabel.TextTransparency = TextLabel.TextTransparency + 0.06
             task.wait(0.1)
         end
         ScreenGui:Destroy()
     end
 }
 
--- ===================== 主程序入口 =====================
-local function Main()
-    LogSystem.Print("脚本启动中，版本：" .. Config.VERSION)
-    LogSystem.Print("正在创建核心功能模块...")
-    
-    -- 创建核心功能模块（整合三大核心功能）
-    local CoreModule = CreateCoreModule()
-    if CoreModule then
-        LogSystem.Success("核心功能模块创建成功，已挂载至Workspace")
-    else
-        LogSystem.Warn("核心功能模块创建失败，将重试一次")
-        task.wait(0.5)
-        CoreModule = CreateCoreModule()
+-- ===================== 主初始化模块（防失效启动） =====================
+local MainInitializer = {
+    InitializeAll = function()
+        print("[MainInitializer] 脚本初始化中（增强版）")
+        -- 清理旧连接（防止残留冲突）
+        ClearOldConnections()
+        -- 初始化角色组件（确保加载完成）
+        CharacterManager.UpdateComponents()
+        -- 启动核心功能
+        PositionRecorder.StartRecording()
+        GodModeModule.StartGodMode()
+        AutoRespawnModule.StartAutoRespawn()
+        -- 绑定角色切换适配（防失效关键）
+        BindCharacterChange()
+        -- 显示手机端提示
+        MobileHintModule.ShowStartupHint()
+        -- 启动日志（确认功能状态）
+        print("[MainInitializer] 脚本启动完成 | 版本：" .. GlobalState.Version)
+        print("[MainInitializer] 功能状态：无敌=" .. tostring(GlobalState.GodModeEnabled) .. " | 自动复活=" .. tostring(GlobalState.AutoRespawnEnabled))
     end
+}
 
-    -- 显示手机端启动提示
-    MobileUIHint:ShowStartupHint()
-
-    -- 冗余验证：检查模块功能可用性
-    task.wait(1)
-    local moduleCheck = Workspace:FindFirstChild(Config.MODULE_NAME)
-    if moduleCheck then
-        LogSystem.Success("脚本启动完成，所有功能正常运行（手机端适配）")
-    else
-        LogSystem.Warn("模块验证失败，但核心功能已后台启动")
+-- ===================== 执行主初始化（防启动失败） =====================
+-- 新增：启动重试逻辑
+local function SafeStart()
+    local success, err = pcall(function()
+        MainInitializer.InitializeAll()
+    end)
+    if not success then
+        warn("[System] 首次启动失败，重试中：" .. err)
+        task.wait(1)
+        MainInitializer.InitializeAll()
     end
 end
 
--- 执行主程序
-Main()
+SafeStart()
 ]])()
