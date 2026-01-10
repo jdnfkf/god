@@ -1,0 +1,194 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- 创建GUI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "GodModeGUI"
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 300, 0, 200)
+MainFrame.Position = UDim2.new(0.5, -150, 0.5, -100)
+MainFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Size = UDim2.new(1, 0, 0, 40)
+Title.Position = UDim2.new(0, 0, 0, 0)
+Title.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Title.Text = "God Mode Menu"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 18
+Title.Font = Enum.Font.GothamBold
+Title.Parent = MainFrame
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 8)
+TitleCorner.Parent = Title
+
+local GodModeButton = Instance.new("TextButton")
+GodModeButton.Name = "GodModeButton"
+GodModeButton.Size = UDim2.new(0.8, 0, 0, 40)
+GodModeButton.Position = UDim2.new(0.1, 0, 0.5, -20)
+GodModeButton.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
+GodModeButton.Text = "God Mode: OFF"
+GodModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+GodModeButton.TextSize = 16
+GodModeButton.Font = Enum.Font.Gotham
+GodModeButton.Parent = MainFrame
+
+local ButtonCorner = Instance.new("UICorner")
+ButtonCorner.CornerRadius = UDim.new(0, 6)
+ButtonCorner.Parent = GodModeButton
+
+local GodModeEnabled = false
+local HumanoidConnection = nil
+
+-- 关闭按钮
+local CloseButton = Instance.new("TextButton")
+CloseButton.Name = "CloseButton"
+CloseButton.Size = UDim2.new(0, 30, 0, 30)
+CloseButton.Position = UDim2.new(1, -35, 0, 5)
+CloseButton.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseButton.TextSize = 16
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.Parent = Title
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 4)
+CloseCorner.Parent = CloseButton
+
+-- 更可靠的上帝模式函数
+local function ApplyGodMode(character)
+    if not character then return end
+    
+    -- 等待角色完全加载
+    repeat task.wait() until character:FindFirstChild("Humanoid")
+    
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    
+    -- 断开之前的连接
+    if HumanoidConnection then
+        HumanoidConnection:Disconnect()
+        HumanoidConnection = nil
+    end
+    
+    -- 设置初始健康值
+    humanoid.Health = humanoid.MaxHealth
+    
+    -- 监听健康值变化
+    HumanoidConnection = humanoid.HealthChanged:Connect(function()
+        if GodModeEnabled and humanoid then
+            if humanoid.Health < humanoid.MaxHealth then
+                humanoid.Health = humanoid.MaxHealth
+            end
+        end
+    end)
+    
+    -- 监听死亡事件
+    HumanoidConnection = humanoid.Died:Connect(function()
+        if GodModeEnabled then
+            task.wait(0.1) -- 等待重生
+            ApplyGodMode(LocalPlayer.Character)
+        end
+    end)
+end
+
+local function ToggleGodMode()
+    GodModeEnabled = not GodModeEnabled
+    
+    if GodModeEnabled then
+        GodModeButton.Text = "God Mode: ON"
+        GodModeButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+        
+        -- 应用上帝模式到当前角色
+        local character = LocalPlayer.Character
+        if character then
+            ApplyGodMode(character)
+        end
+        
+        -- 显示状态提示
+        game.StarterGui:SetCore("SendNotification", {
+            Title = "God Mode",
+            Text = "God Mode ENABLED",
+            Duration = 3,
+            Icon = "rbxassetid://4483345998"
+        })
+    else
+        GodModeButton.Text = "God Mode: OFF"
+        GodModeButton.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
+        
+        -- 断开连接
+        if HumanoidConnection then
+            HumanoidConnection:Disconnect()
+            HumanoidConnection = nil
+        end
+        
+        -- 显示状态提示
+        game.StarterGui:SetCore("SendNotification", {
+            Title = "God Mode",
+            Text = "God Mode DISABLED",
+            Duration = 3,
+            Icon = "rbxassetid://4483345998"
+        })
+    end
+end
+
+local function OnCharacterAdded(character)
+    task.wait(0.5) -- 等待角色完全加载
+    
+    if GodModeEnabled then
+        ApplyGodMode(character)
+        
+        -- 显示重新应用的通知
+        game.StarterGui:SetCore("SendNotification", {
+            Title = "God Mode",
+            Text = "God Mode reapplied to new character",
+            Duration = 3,
+            Icon = "rbxassetid://4483345998"
+        })
+    end
+end
+
+-- 连接事件
+GodModeButton.MouseButton1Click:Connect(ToggleGodMode)
+CloseButton.MouseButton1Click:Connect(function()
+    ScreenGui:Destroy()
+end)
+
+LocalPlayer.CharacterAdded:Connect(OnCharacterAdded)
+
+-- 初始化
+if LocalPlayer.Character then
+    task.spawn(function()
+        OnCharacterAdded(LocalPlayer.Character)
+    end)
+end
+
+-- 添加一个热键来切换显示/隐藏GUI（可选）
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed then
+        if input.KeyCode == Enum.KeyCode.G then -- 按G键显示/隐藏
+            MainFrame.Visible = not MainFrame.Visible
+        end
+    end
+end)
