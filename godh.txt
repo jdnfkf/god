@@ -1,32 +1,25 @@
 loadstring([[
 -- ==============================================
--- Roblox无敌+复活脚本（防怪物抓取增强版）
--- 核心修复：拦截怪物强制死亡、锁定死亡前位置
--- 适配：手机端、支持含抓取机制怪物的游戏（如Doors等）
+-- 防怪物抓取死亡+精准复活脚本（修复状态枚举报错）
+-- 核心修复：移除无效的Stunned状态枚举
 -- ==============================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
--- ===================== 全局状态管理（新增死亡位置锁定） =====================
 local GlobalState = {
     GodModeEnabled = true,
     AutoRespawnEnabled = true,
     LastSafePosition = nil,
-    LastDeathPosition = nil, -- 新增：锁定死亡瞬间位置（防怪物抓取后位置偏移）
+    LastDeathPosition = nil,
     IsScriptRunning = true,
     ActiveConnections = {},
-    IsBeingGrabbed = false, -- 新增：怪物抓取状态标记
-    Version = "v2.5.0 (Anti-Monster Grab)",
-    Author = "Roblox Script Toolkit"
+    IsBeingGrabbed = false
 }
 
--- ===================== 核心工具函数（防抓取增强） =====================
--- 工具1：安全获取角色组件（延长超时+状态校验）
 local function SafeWaitForChild(parent, childName, maxRetry, retryInterval)
-    maxRetry = maxRetry or 30 -- 进一步延长超时（应对怪物抓取时的组件加载延迟）
+    maxRetry = maxRetry or 30
     retryInterval = retryInterval or 0.2
     local retryCount = 0
     while retryCount < maxRetry do
@@ -43,16 +36,13 @@ local function SafeWaitForChild(parent, childName, maxRetry, retryInterval)
     return parent:FindFirstChild(childName)
 end
 
--- 工具2：检查角色有效性（新增抓取状态判断）
 local function IsCharacterValid(character)
     if not character or not character:IsDescendantOf(Workspace) then return false end
     local humanoid = character:FindFirstChild("Humanoid")
     local hrp = character:FindFirstChild("HumanoidRootPart")
-    -- 新增：判断人形是否处于正常状态（非抓取、非 ragdoll）
     return humanoid and hrp and humanoid.Health ~= nil and humanoid.MaxHealth ~= nil and not GlobalState.IsBeingGrabbed
 end
 
--- 工具3：清理旧连接（防止抓取时重复绑定冲突）
 local function ClearOldConnections()
     for _, conn in ipairs(GlobalState.ActiveConnections) do
         if conn and typeof(conn) == "RBXScriptConnection" then
@@ -62,7 +52,6 @@ local function ClearOldConnections()
     GlobalState.ActiveConnections = {}
 end
 
--- ===================== 角色组件管理（抓取状态适配） =====================
 local CharacterManager = {
     UpdateComponents = function()
         local character = LocalPlayer.Character
@@ -70,20 +59,17 @@ local CharacterManager = {
             print("[CharacterManager] 等待角色生成...")
             local charWaitConn = LocalPlayer.CharacterAdded:Wait()
             character = charWaitConn
-            task.wait(1.8) -- 延长手机端角色加载延迟（应对抓取后重生）
+            task.wait(1.8)
         end
-        -- 安全获取组件（抓取时可能出现组件临时失效）
         local humanoid = SafeWaitForChild(character, "Humanoid", 30, 0.1)
         local hrp = SafeWaitForChild(character, "HumanoidRootPart", 30, 0.1)
         
-        -- 组件无效时强制重试（防抓取导致的组件丢失）
         if not humanoid or not hrp then
             task.wait(1)
             humanoid = SafeWaitForChild(character, "Humanoid", 25, 0.1)
             hrp = SafeWaitForChild(character, "HumanoidRootPart", 25, 0.1)
         end
         
-        -- 存储组件并监听抓取状态（如怪物导致的 ragdoll 状态）
         GlobalState.CharacterComponents = {
             Character = character,
             Humanoid = humanoid,
@@ -91,7 +77,6 @@ local CharacterManager = {
         }
         print("[CharacterManager] 角色组件更新完成")
         
-        -- 新增：监听人形状态，标记抓取（如Doors中Seek的黑手抓取）
         humanoid.StateChanged:Connect(function(oldState, newState)
             if newState == Enum.HumanoidStateType.Ragdoll or newState == Enum.HumanoidStateType.FallingDown then
                 GlobalState.IsBeingGrabbed = true
@@ -115,7 +100,6 @@ local CharacterManager = {
     end
 }
 
--- ===================== 位置记录模块（死亡瞬间锁定） =====================
 local PositionRecorder = {
     StartRecording = function()
         print("[PositionRecorder] 位置记录模块已启动（含死亡锁定）")
@@ -123,11 +107,9 @@ local PositionRecorder = {
             if not GlobalState.IsScriptRunning then return end
             local _, humanoid, hrp = CharacterManager.GetComponents()
             if humanoid and hrp then
-                -- 存活时记录安全位置
                 if humanoid.Health > 0 then
                     GlobalState.LastSafePosition = hrp.Position
                 end
-                -- 死亡瞬间锁定位置（不受怪物抓取后位置移动影响）
                 if humanoid.Health <= 0 and not GlobalState.IsBeingGrabbed then
                     GlobalState.LastDeathPosition = hrp.Position
                     print("[PositionRecorder] 死亡位置锁定：" .. tostring(GlobalState.LastDeathPosition))
@@ -138,7 +120,6 @@ local PositionRecorder = {
     end
 }
 
--- ===================== 无敌功能模块（拦截强制死亡） =====================
 local GodModeModule = {
     StartGodMode = function()
         print("[GodModeModule] 无敌模块已启动（防抓取死亡）")
@@ -146,17 +127,15 @@ local GodModeModule = {
             if not GlobalState.IsScriptRunning or not GlobalState.GodModeEnabled then return end
             local _, humanoid = CharacterManager.GetComponents()
             if humanoid then
-                -- 强制禁用所有死亡/抓取相关状态（如怪物处决、ragdoll）
+                -- 移除无效的Stunned状态枚举
                 humanoid.BreakJointsOnDeath = false
                 humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-                humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false) -- 拦截抓取导致的 ragdoll
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
                 humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-                humanoid:SetStateEnabled(Enum.HumanoidStateType.Stunned, false) -- 新增：拦截怪物击晕
                 
-                -- 抓取/死亡时强制回血（防怪物秒杀）
                 if humanoid.Health <= 0 or GlobalState.IsBeingGrabbed then
                     humanoid.Health = humanoid.MaxHealth
-                    GlobalState.IsBeingGrabbed = false -- 重置抓取状态
+                    GlobalState.IsBeingGrabbed = false
                     print("[GodModeModule] 拦截强制死亡/抓取，恢复满血量")
                 end
             end
@@ -165,7 +144,6 @@ local GodModeModule = {
     end
 }
 
--- ===================== 原地复活模块（死亡位置精准传送） =====================
 local AutoRespawnModule = {
     StartAutoRespawn = function()
         print("[AutoRespawnModule] 原地复活模块已启动（精准位置）")
@@ -173,32 +151,27 @@ local AutoRespawnModule = {
             if not GlobalState.IsScriptRunning or not GlobalState.AutoRespawnEnabled or not GlobalState.GodModeEnabled then return end
             local character, humanoid, hrp = CharacterManager.GetComponents()
             if humanoid and hrp and humanoid.Health <= 0 then
-                -- 优先使用死亡瞬间锁定的位置（无则用安全位置，防空值）
                 local respawnPos = GlobalState.LastDeathPosition or GlobalState.LastSafePosition or Vector3.new(0, 3, 0)
                 print("[AutoRespawnModule] 执行原地复活，位置：" .. tostring(respawnPos))
                 
-                -- 强制复活+精准传送（增加高度偏移防卡地）
                 humanoid.Health = humanoid.MaxHealth
-                hrp.CFrame = CFrame.new(respawnPos + Vector3.new(0, 3, 0)) -- 提高高度防怪物抓取位置卡地
+                hrp.CFrame = CFrame.new(respawnPos + Vector3.new(0, 3, 0))
                 humanoid:ChangeState(Enum.HumanoidStateType.Running)
                 
-                -- 复活后重新初始化组件（防止后续抓取失效）
                 task.wait(0.5)
                 CharacterManager.UpdateComponents()
-                GlobalState.IsBeingGrabbed = false -- 重置抓取状态
+                GlobalState.IsBeingGrabbed = false
             end
         end)
         table.insert(GlobalState.ActiveConnections, conn)
     end
 }
 
--- ===================== 角色切换与抓取后适配 =====================
 local function BindCharacterChange()
-    -- 角色重生/切换时重新初始化（应对抓取后重生）
     LocalPlayer.CharacterAdded:Connect(function(newChar)
         print("[System] 检测到角色切换/重生，重新初始化功能")
         ClearOldConnections()
-        task.wait(2) -- 延长延迟（适配手机端抓取后重生节奏）
+        task.wait(2)
         CharacterManager.UpdateComponents()
         PositionRecorder.StartRecording()
         GodModeModule.StartGodMode()
@@ -207,7 +180,6 @@ local function BindCharacterChange()
     end)
 end
 
--- ===================== 手机端提示模块（抓取防护提示） =====================
 local MobileHintModule = {
     ShowStartupHint = function()
         local ScreenGui = Instance.new("ScreenGui")
@@ -237,7 +209,7 @@ local MobileHintModule = {
         local TextLabel = Instance.new("TextLabel")
         TextLabel.Size = UDim2.new(1, 0, 1, 0)
         TextLabel.BackgroundTransparency = 1
-        TextLabel.Text = "✅ 防怪物抓取脚本启动\n功能：拦截死亡+精准复活\n版本：" .. GlobalState.Version .. "\n被抓取时自动回血"
+        TextLabel.Text = "✅ 防怪物抓取脚本启动\n功能：拦截死亡+精准复活\n已修复状态枚举报错"
         TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
         TextLabel.TextScaled = true
         TextLabel.Font = Enum.Font.Gotham
@@ -245,7 +217,6 @@ local MobileHintModule = {
         TextLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
         TextLabel.Parent = Frame
         
-        -- 10秒后自动隐藏（延长显示，方便确认抓取防护功能）
         task.wait(10)
         for i = 1, 20 do
             Frame.BackgroundTransparency = Frame.BackgroundTransparency + 0.04
@@ -256,7 +227,6 @@ local MobileHintModule = {
     end
 }
 
--- ===================== 主初始化模块（防抓取启动） =====================
 local MainInitializer = {
     InitializeAll = function()
         print("[MainInitializer] 脚本初始化中（防怪物抓取版）")
@@ -267,18 +237,16 @@ local MainInitializer = {
         AutoRespawnModule.StartAutoRespawn()
         BindCharacterChange()
         MobileHintModule.ShowStartupHint()
-        print("[MainInitializer] 脚本启动完成 | 版本：" .. GlobalState.Version)
-        print("[MainInitializer] 功能状态：无敌=" .. tostring(GlobalState.GodModeEnabled) .. " | 精准复活=" .. tostring(GlobalState.AutoRespawnEnabled))
+        print("[MainInitializer] 脚本启动完成 | 已修复状态枚举报错")
     end
 }
 
--- ===================== 安全启动（防抓取时初始化失败） =====================
 local function SafeStart()
     local success, err = pcall(function()
         MainInitializer.InitializeAll()
     end)
     if not success then
-        warn("[System] 首次启动失败（可能因抓取状态），重试中：" .. err)
+        warn("[System] 首次启动失败，重试中：" .. err)
         task.wait(2)
         MainInitializer.InitializeAll()
     end
