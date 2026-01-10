@@ -1,0 +1,233 @@
+loadstring([[
+-- ==============================================
+-- 智能适配防死亡脚本（屏幕提示版）
+-- 核心：自动检测机制+屏幕提示+动态适配
+-- ==============================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local CoreGui = game:GetService("CoreGui")
+
+local GlobalState = {
+    IsGodMode = true,
+    ToggleKey = Enum.KeyCode.F3,
+    DetectedMechanisms = {
+        HasRemoteDeath = false,
+        HasStateProperty = false,
+        HasDestroyDeath = false,
+        HasNetworkPacket = false
+    }
+}
+
+-- ===================== 工具：显示屏幕提示 =====================
+local function ShowScreenTip(title, content, duration)
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "SmartAntiDeathTip"
+    ScreenGui.Parent = CoreGui
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    -- 背景框
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0.8, 0, 0.4, 0)
+    Frame.Position = UDim2.new(0.1, 0, 0.5, 0)
+    Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    Frame.BackgroundTransparency = 0.2
+    Frame.BorderSizePixel = 0
+    Frame.Parent = ScreenGui
+
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 12)
+    UICorner.Parent = Frame
+
+    -- 标题
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, 0, 0.2, 0)
+    Title.Position = UDim2.new(0, 0, 0.05, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = title
+    Title.TextColor3 = Color3.fromRGB(255, 200, 0)
+    Title.TextScaled = true
+    Title.Font = Enum.Font.GothamBold
+    Title.Parent = Frame
+
+    -- 内容
+    local Content = Instance.new("TextLabel")
+    Content.Size = UDim2.new(1, 0, 0.7, 0)
+    Content.Position = UDim2.new(0, 0, 0.25, 0)
+    Content.BackgroundTransparency = 1
+    Content.Text = content
+    Content.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Content.TextScaled = true
+    Content.Font = Enum.Font.Gotham
+    Content.TextWrapped = true
+    Content.Parent = Frame
+
+    -- 自动销毁
+    task.wait(duration)
+    for i = 1, 20 do
+        Frame.BackgroundTransparency += 0.04
+        Title.TextTransparency += 0.05
+        Content.TextTransparency += 0.05
+        task.wait(0.1)
+    end
+    ScreenGui:Destroy()
+end
+
+-- ===================== 阶段1：自动检测游戏机制 =====================
+local function DetectGameMechanisms()
+    ShowScreenTip("智能检测中", "正在识别游戏死亡机制...", 2)
+    
+    -- 检测1：远程指令死亡
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) and obj.Name:lower():find("dead") then
+            GlobalState.DetectedMechanisms.HasRemoteDeath = true
+            break
+        end
+    end
+
+    -- 检测2：状态属性死亡
+    for _, prop in ipairs({"IsDead", "Dead", "State"}) do
+        if LocalPlayer:FindFirstChild(prop) then
+            GlobalState.DetectedMechanisms.HasStateProperty = true
+            break
+        end
+    end
+
+    -- 检测3：角色销毁死亡
+    local testChar = Instance.new("Model")
+    testChar.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            GlobalState.DetectedMechanisms.HasDestroyDeath = true
+        end
+    end)
+    testChar.Parent = Workspace
+    testChar.Parent = nil
+
+    -- 检测4：网络包同步
+    pcall(function()
+        local Network = game:GetService("NetworkClient")
+        if Network then
+            GlobalState.DetectedMechanisms.HasNetworkPacket = true
+        end
+    end)
+
+    -- 生成检测结果内容
+    local resultContent = "已识别机制：\n"
+    if GlobalState.DetectedMechanisms.HasRemoteDeath then
+        resultContent ..= "- 远程指令死亡\n"
+    end
+    if GlobalState.DetectedMechanisms.HasStateProperty then
+        resultContent ..= "- 状态属性死亡\n"
+    end
+    if GlobalState.DetectedMechanisms.HasDestroyDeath then
+        resultContent ..= "- 角色销毁死亡\n"
+    end
+    if GlobalState.DetectedMechanisms.HasNetworkPacket then
+        resultContent ..= "- 网络包同步死亡"
+    end
+    if resultContent == "已识别机制：\n" then
+        resultContent = "已识别机制：\n- 通用基础机制"
+    end
+
+    ShowScreenTip("检测完成", resultContent, 5)
+end
+
+-- ===================== 阶段2：启用匹配逻辑 =====================
+local function EnableMatchedLogic()
+    local enabledLogic = "已启用逻辑：\n"
+
+    -- 逻辑1：远程指令拦截
+    if GlobalState.DetectedMechanisms.HasRemoteDeath then
+        local function CheckRemote(obj)
+            if (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) and obj.Name:lower():find("dead") then
+                if obj:IsA("RemoteEvent") then
+                    obj.OnClientEvent:Connect(function() if GlobalState.IsGodMode then return end end)
+                else
+                    obj.OnClientInvoke = function() if GlobalState.IsGodMode then return end end
+                end
+            end
+        end
+        ReplicatedStorage.DescendantAdded:Connect(CheckRemote)
+        for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do CheckRemote(obj) end
+        enabledLogic ..= "- 远程指令拦截\n"
+    end
+
+    -- 逻辑2：状态属性覆盖
+    if GlobalState.DetectedMechanisms.HasStateProperty then
+        pcall(function()
+            local mt = getrawmetatable(LocalPlayer)
+            setreadonly(mt, false)
+            local oldIndex = mt.__index
+            mt.__index = function(t, k)
+                if GlobalState.IsGodMode and k:lower():find("dead") then
+                    return false
+                end
+                return oldIndex(t, k)
+            end
+            setreadonly(mt, true)
+        end)
+        enabledLogic ..= "- 状态属性覆盖\n"
+    end
+
+    -- 逻辑3：销毁拦截
+    if GlobalState.DetectedMechanisms.HasDestroyDeath then
+        LocalPlayer.CharacterAdded:Connect(function(char)
+            char.AncestryChanged:Connect(function(_, parent)
+                if GlobalState.IsGodMode and not parent then
+                    task.spawn(function() LocalPlayer:LoadCharacter() end)
+                end
+            end)
+        end)
+        enabledLogic ..= "- 角色销毁拦截\n"
+    end
+
+    -- 逻辑4：网络包拦截
+    if GlobalState.DetectedMechanisms.HasNetworkPacket then
+        pcall(function()
+            local Network = game:GetService("NetworkClient")
+            local oldSend = Network.Send
+            Network.Send = function(self, packet)
+                if GlobalState.IsGodMode and typeof(packet) == "table" and packet.Type:lower():find("state") then
+                    packet.Data.IsDead = false
+                end
+                return oldSend(self, packet)
+            end
+        end)
+        enabledLogic ..= "- 网络包拦截"
+    end
+
+    -- 通用逻辑
+    RunService.Heartbeat:Connect(function()
+        if not GlobalState.IsGodMode then return end
+        local char = LocalPlayer.Character
+        if char then
+            local hum = char:FindFirstChild("Humanoid")
+            if hum then
+                hum.Health = hum.MaxHealth
+                hum.BreakJointsOnDeath = false
+            end
+        end
+    end)
+    if enabledLogic == "已启用逻辑：\n" then
+        enabledLogic = "已启用逻辑：\n- 通用满状态维持"
+    end
+
+    ShowScreenTip("逻辑启用完成", enabledLogic, 5)
+end
+
+-- ===================== 快捷键开关 =====================
+game:GetService("UserInputService").InputBegan:Connect(function(input)
+    if input.KeyCode == GlobalState.ToggleKey then
+        GlobalState.IsGodMode = not GlobalState.IsGodMode
+        local status = GlobalState.IsGodMode and "✅ 防死亡已开启" or "❌ 防死亡已关闭"
+        ShowScreenTip("功能切换", status, 2)
+    end
+end)
+
+-- ===================== 启动流程 =====================
+DetectGameMechanisms()
+task.wait(2.5) -- 等待检测提示结束
+EnableMatchedLogic()
+ShowScreenTip("脚本启动完成", "按F3切换防死亡功能", 3)
+]])()
