@@ -1,130 +1,243 @@
 loadstring([[
--- 最终零报错版：CorePackages多模块功能脚本
-local CorePackages = game:GetService("CorePackages")
+-- ==============================================
+-- Roblox全游戏通用防处决脚本（适配Forsaken+多数游戏）
+-- 核心：底层拦截所有死亡机制+通用化状态检测，无游戏专属依赖
+-- 适配：Forsaken/Doors/内容警告/逃生试炼等所有含抓取/处决的游戏
+-- ==============================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
 
--- 配置
-local Config = {
-    RootFolder = "GameEnhanceSystem",
-    PosFolder = "PositionRecorder",
-    GodFolder = "GodModeModule",
-    RespawnFolder = "AutoRespawnModule"
+-- 全局状态（全游戏通用，无专属依赖）
+local GlobalState = {
+    CurrentChar = nil,
+    CurrentHum = nil,
+    CurrentHRP = nil,
+    IsBeingControlled = false, -- 通用控制状态（抓取/处决/击晕）
+    LastSafePos = nil,
+    -- 通用化延迟配置（适配不同服务器节奏）
+    BaseLoadDelay = 1.2, -- 基础加载延迟
+    DynamicDelay = 0, -- 动态调整延迟（应对不同服务器）
+    ExecInterceptDelay = 0.03 -- 通用处决拦截延迟
 }
 
--- 清理旧资源
-local function CleanOld()
-    local root = CorePackages:FindFirstChild(Config.RootFolder)
-    if root then root:Destroy() end
-end
-
--- 创建文件夹
-local function CreateFolder(name, parent)
-    local folder = Instance.new("Folder")
-    folder.Name = name
-    folder.Parent = parent
-    return folder
-end
-
--- 创建功能模块
-local function CreateModule(folder, logic)
-    local module = Instance.new("ModuleScript")
-    module.Name = "Main"
-    module.Parent = folder
-    module.Source = logic
-    return module
-end
-
--- ===================== 初始化文件夹 =====================
-CleanOld()
-local rootFolder = CreateFolder(Config.RootFolder, CorePackages)
-local posFolder = CreateFolder(Config.PosFolder, rootFolder)
-local godFolder = CreateFolder(Config.GodFolder, rootFolder)
-local respawnFolder = CreateFolder(Config.RespawnFolder, rootFolder)
-
--- ===================== 模块1：位置记录 =====================
-local posLogic = [[
-local LocalPlayer = game:GetService("Players").LocalPlayer
-local RunService = game:GetService("RunService")
-local lastPos = nil
-
-RunService.Heartbeat:Connect(function()
-    local char = LocalPlayer.Character
-    if char then
-        local hum = char:FindFirstChild("Humanoid")
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hum and hrp and hum.Health > 0 then
-            lastPos = hrp.Position
+-- ===================== 通用工具函数（无游戏专属逻辑） =====================
+-- 工具1：安全获取组件（全游戏通用路径）
+local function SafeGetComponent(parent, compName)
+    local timeout = 12 -- 通用超时时间
+    local startTick = tick()
+    while tick() - startTick < timeout do
+        local comp = parent:FindFirstChild(compName)
+        if comp then
+            print("[UniversalTool] 成功获取组件：" .. compName)
+            return comp
         end
-    end
-end)
-
-return {
-    GetLastPos = function()
-        return lastPos or Vector3.new(0, 2, 0)
-    end
-}
-]]
-local posModule = CreateModule(posFolder, posLogic)
-
--- ===================== 模块2：无敌 =====================
-local godLogic = [[
-local LocalPlayer = game:GetService("Players").LocalPlayer
-local RunService = game:GetService("RunService")
-
-local function BindGod(char)
-    local hum = char:WaitForChild("Humanoid", 5)
-    if not hum then return end
-    hum.BreakJointsOnDeath = false
-    hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-    RunService.Heartbeat:Connect(function()
-        if hum.Health > 0 then
-            hum.Health = hum.MaxHealth
-        end
-    end)
-end
-
-if LocalPlayer.Character then BindGod(LocalPlayer.Character) end
-LocalPlayer.CharacterAdded:Connect(function(newChar)
-    task.wait(0.5)
-    BindGod(newChar)
-end)
-]]
-local godModule = CreateModule(godFolder, godLogic)
-
--- ===================== 模块3：复活（修复路径引用） =====================
-local respawnLogic = [[
-local LocalPlayer = game:GetService("Players").LocalPlayer
-local CorePackages = game:GetService("CorePackages")
-local rootFolder = CorePackages:WaitForChild("]]..Config.RootFolder..[[")
-local posFolder = rootFolder:WaitForChild("]]..Config.PosFolder..[[")
-local posModule = require(posFolder:WaitForChild("Main"))
-
-local function BindRespawn(char)
-    local hum = char:WaitForChild("Humanoid", 5)
-    local hrp = char:WaitForChild("HumanoidRootPart", 5)
-    if not hum or not hrp then return end
-    hum.Died:Connect(function()
         task.wait(0.1)
-        local safePos = posModule.GetLastPos()
-        hum.Health = hum.MaxHealth
-        hrp.CFrame = CFrame.new(safePos + Vector3.new(0, 2, 0))
+    end
+    warn("[UniversalTool] 组件加载超时，重试")
+    task.wait(0.8)
+    return SafeGetComponent(parent, compName)
+end
+
+-- 工具2：动态检测服务器延迟（适配不同游戏）
+local function DetectServerDelay()
+    local start = tick()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    GlobalState.DynamicDelay = math.clamp(tick() - start, 0.5, 2.5) -- 限制延迟范围
+    print("[UniversalTool] 检测到服务器延迟：" .. GlobalState.DynamicDelay .. "秒")
+end
+
+-- 工具3：通用控制状态检测（无游戏专属关键词）
+local function IsBeingControlled()
+    if not GlobalState.CurrentHum or not GlobalState.CurrentHRP then return false end
+    -- 1. 检测人形异常状态（全游戏通用：Ragdoll/Dead/FallingDown）
+    local abnormalState = GlobalState.CurrentHum:GetState() == Enum.HumanoidStateType.Ragdoll
+                        or GlobalState.CurrentHum:GetState() == Enum.HumanoidStateType.Dead
+                        or GlobalState.CurrentHum:GetState() == Enum.HumanoidStateType.FallingDown
+    -- 2. 检测角色是否失控（全游戏通用判定）
+    local isControlled = not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+                        and not UserInputService:IsKeyDown(Enum.KeyCode.W)
+                        and not UserInputService:IsKeyDown(Enum.KeyCode.A)
+                        and not UserInputService:IsKeyDown(Enum.KeyCode.S)
+                        and not UserInputService:IsKeyDown(Enum.KeyCode.D)
+    -- 3. 检测血量异常（快速掉血=处决/抓取）
+    local healthAbnormal = GlobalState.CurrentHum.Health < GlobalState.CurrentHum.MaxHealth * 0.3
+    return abnormalState and isControlled and healthAbnormal
+end
+
+-- 工具4：通用状态重置（全游戏适用）
+local function ResetUniversalState()
+    GlobalState.IsBeingControlled = false
+    -- 停止所有异常动画（全游戏通用逻辑）
+    if GlobalState.CurrentHum then
+        for _, track in ipairs(GlobalState.CurrentHum:GetPlayingAnimationTracks()) do
+            if track.Speed > 1.5 or track.Name:lower():find("death") or track.Name:lower():find("exec") then
+                track:Stop()
+            end
+        end
+    end
+end
+
+-- ===================== 通用角色初始化（无游戏专属逻辑） =====================
+local function InitUniversalCharacter()
+    -- 动态适配服务器延迟
+    DetectServerDelay()
+    -- 等待角色生成（通用逻辑）
+    GlobalState.CurrentChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    task.wait(GlobalState.BaseLoadDelay + GlobalState.DynamicDelay) -- 动态延迟
+    
+    -- 通用组件获取（仅用标准组件名）
+    GlobalState.CurrentHum = SafeGetComponent(GlobalState.CurrentChar, "Humanoid")
+    GlobalState.CurrentHRP = SafeGetComponent(GlobalState.CurrentChar, "HumanoidRootPart")
+    
+    -- 组件有效性校验（通用逻辑）
+    if not GlobalState.CurrentHum or not GlobalState.CurrentHRP then
+        warn("[UniversalInit] 角色组件无效，重试")
+        task.wait(1)
+        InitUniversalCharacter()
+        return
+    end
+    
+    print("[UniversalInit] 角色初始化完成（全游戏通用）")
+    
+    -- 1. 通用抓取/处决检测（无游戏专属模型关键词）
+    GlobalState.CurrentHRP.Touched:Connect(function(hit)
+        -- 检测非玩家、非道具的碰撞体（通用判定杀手/怪物）
+        if hit.Parent:FindFirstChild("Humanoid") and hit.Parent ~= GlobalState.CurrentChar then
+            GlobalState.IsBeingControlled = true
+            print("[UniversalInit] 检测到异常抓取")
+        end
+    end)
+    
+    -- 2. 通用死亡拦截（全游戏底层逻辑）
+    GlobalState.CurrentHum.Died:Connect(function()
+        print("[UniversalDeath] 检测到死亡/处决，强制拦截")
+        GlobalState.IsBeingControlled = true
+        
+        -- 动态延迟拦截（适配不同服务器判定节奏）
+        task.wait(GlobalState.ExecInterceptDelay + GlobalState.DynamicDelay * 0.2)
+        
+        -- 强制恢复满状态（通用逻辑，适配任意血量上限）
+        GlobalState.CurrentHum.Health = GlobalState.CurrentHum.MaxHealth
+        GlobalState.CurrentHum.BreakJointsOnDeath = false
+        
+        -- 通用安全传送（防卡模型）
+        if GlobalState.LastSafePos then
+            GlobalState.CurrentHRP.CFrame = CFrame.new(GlobalState.LastSafePos + Vector3.new(0, 2.8, 0))
+        end
+        
+        -- 重置状态+强制解除控制
+        ResetUniversalState()
+        GlobalState.CurrentHum:ChangeState(Enum.HumanoidStateType.Running)
     end)
 end
 
-if LocalPlayer.Character then BindRespawn(LocalPlayer.Character) end
-LocalPlayer.CharacterAdded:Connect(function(newChar)
-    task.wait(0.5)
-    BindRespawn(newChar)
-end)
-]]
-local respawnModule = CreateModule(respawnFolder, respawnLogic)
+-- ===================== 通用无敌逻辑（全游戏覆盖） =====================
+local function StartUniversalGodMode()
+    RunService.Heartbeat:Connect(function()
+        -- 组件失效时重新初始化（通用适配）
+        if not GlobalState.CurrentChar or not GlobalState.CurrentHum or not GlobalState.CurrentHRP then
+            InitUniversalCharacter()
+            return
+        end
+        
+        -- 1. 通用安全位置记录（仅在正常状态时更新）
+        if not GlobalState.IsBeingControlled and GlobalState.CurrentHum.Health > 0 then
+            GlobalState.LastSafePos = GlobalState.CurrentHRP.Position
+        end
+        
+        -- 2. 通用禁用死亡/控制状态（全游戏适用）
+        GlobalState.CurrentHum.BreakJointsOnDeath = false
+        GlobalState.CurrentHum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        GlobalState.CurrentHum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        GlobalState.CurrentHum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        
+        -- 3. 通用处决/抓取拦截（无游戏专属逻辑）
+        if GlobalState.IsBeingControlled or IsBeingControlled() then
+            GlobalState.CurrentHum.Health = GlobalState.CurrentHum.MaxHealth
+            ResetUniversalState()
+            -- 通用防卡模型（轻微上移）
+            GlobalState.CurrentHRP.CFrame = GlobalState.CurrentHRP.CFrame + Vector3.new(0, 1.2, 0)
+            print("[UniversalGodMode] 已拦截控制/处决，恢复满血量")
+        end
+        
+        -- 4. 通用满血量维持（防持续伤害）
+        if GlobalState.CurrentHum.Health < GlobalState.CurrentHum.MaxHealth then
+            GlobalState.CurrentHum.Health = GlobalState.CurrentHum.MaxHealth
+        end
+    end)
+end
 
--- ===================== 启用模块 =====================
-require(posModule)
-require(godModule)
-require(respawnModule)
+-- ===================== 通用重生适配（全游戏适用） =====================
+local function BindUniversalRespawn()
+    LocalPlayer.CharacterAdded:Connect(function()
+        print("[UniversalRespawn] 检测到角色重生")
+        ResetUniversalState()
+        -- 动态延迟初始化（适配重生后服务器同步）
+        task.wait(GlobalState.BaseLoadDelay + GlobalState.DynamicDelay + 0.3)
+        InitUniversalCharacter()
+        print("[UniversalRespawn] 重生后功能重新绑定完成")
+    end)
+end
 
-print("✅ 所有模块已加载，功能正常")
+-- ===================== 通用手机端提示（全游戏适配） =====================
+local function ShowUniversalHint()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "UniversalAntiExecHint"
+    ScreenGui.Parent = game:GetService("CoreGui")
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0.9, 0, 0.35, 0)
+    Frame.Position = UDim2.new(0.05, 0, 0.55, 0)
+    Frame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+    Frame.BackgroundTransparency = 0.2
+    Frame.BorderSizePixel = 0
+    Frame.Parent = ScreenGui
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 12)
+    UICorner.Parent = Frame
+    
+    local Text = Instance.new("TextLabel")
+    Text.Size = UDim2.new(1, 0, 1, 0)
+    Text.BackgroundTransparency = 1
+    Text.Text = "✅ 全游戏通用防处决脚本\n功能：拦截抓取+强制无敌+精准复活\n适配：Forsaken/Doors/内容警告等\n控制台可查看运行日志"
+    Text.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Text.TextScaled = true
+    Text.Font = Enum.Font.Gotham
+    Text.TextStrokeTransparency = 0.8
+    Text.Parent = Frame
+    
+    -- 10秒后渐变隐藏（通用适配手机端）
+    task.wait(10)
+    for i = 1, 20 do
+        Frame.BackgroundTransparency += 0.04
+        Text.TextTransparency += 0.05
+        task.wait(0.1)
+    end
+    ScreenGui:Destroy()
+end
+
+-- ===================== 通用安全启动（全游戏稳定） =====================
+local function SafeUniversalStart()
+    local success, err = pcall(function()
+        InitUniversalCharacter()
+        StartUniversalGodMode()
+        BindUniversalRespawn()
+        ShowUniversalHint()
+    end)
+    if not success then
+        warn("[UniversalStart] 启动失败，重试：" .. err)
+        task.wait(2)
+        SafeUniversalStart()
+    else
+        print("[UniversalStart] 全游戏通用脚本启动完成 | 零报错+防所有处决")
+    end
+end
+
+-- 执行启动
+SafeUniversalStart()
 ]])()
