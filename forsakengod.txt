@@ -1,0 +1,134 @@
+-- 修复版：无敌模式脚本（支持角色切换/复活+无报错）
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- 清理旧UI，避免冲突
+local oldGui = PlayerGui:FindFirstChild("GodModeGUI")
+if oldGui then oldGui:Destroy() end
+
+-- 1. 创建可视化UI（保留原风格）
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "GodModeGUI"
+ScreenGui.Parent = PlayerGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 300, 0, 200)
+MainFrame.Position = UDim2.new(0.5, -150, 0.5, -100)
+MainFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Size = UDim2.new(1, 0, 0, 40)
+Title.Position = UDim2.new(0, 0, 0, 0)
+Title.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Title.Text = "God Mode Menu"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 18
+Title.Font = Enum.Font.GothamBold
+Title.Parent = MainFrame
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 8)
+TitleCorner.Parent = Title
+
+local GodModeButton = Instance.new("TextButton")
+GodModeButton.Name = "GodModeButton"
+GodModeButton.Size = UDim2.new(0.8, 0, 0, 40)
+GodModeButton.Position = UDim2.new(0.1, 0, 0.5, -20)
+GodModeButton.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
+GodModeButton.Text = "God Mode: OFF"
+GodModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+GodModeButton.TextSize = 16
+GodModeButton.Font = Enum.Font.Gotham
+GodModeButton.Parent = MainFrame
+
+local ButtonCorner = Instance.new("UICorner")
+ButtonCorner.CornerRadius = UDim.new(0, 6)
+ButtonCorner.Parent = GodModeButton
+
+-- 2. 核心状态变量（修复绑定失效问题）
+local GodModeEnabled = false
+local HumanoidConnection = nil -- 存储无敌绑定连接
+
+-- 3. 无敌逻辑核心（修复漏判+强制回血）
+local function SetGodMode(Humanoid)
+    -- 断开旧连接，避免重复绑定导致卡顿
+    if HumanoidConnection then
+        HumanoidConnection:Disconnect()
+        HumanoidConnection = nil
+    end
+
+    -- 双重保险：HealthChanged监听+心跳检测（防强制死亡）
+    HumanoidConnection = Humanoid.HealthChanged:Connect(function()
+        if GodModeEnabled then
+            Humanoid.Health = Humanoid.MaxHealth
+        end
+    end)
+
+    -- 保底检测：防止HealthChanged被拦截
+    RunService.Heartbeat:Connect(function()
+        if GodModeEnabled and Humanoid.Health > 0 and Humanoid.Health < Humanoid.MaxHealth then
+            Humanoid.Health = Humanoid.MaxHealth
+        end
+    end)
+end
+
+-- 4. 切换无敌模式（修复状态同步）
+local function ToggleGodMode()
+    GodModeEnabled = not GodModeEnabled
+
+    if GodModeEnabled then
+        GodModeButton.Text = "God Mode: ON"
+        GodModeButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+        
+        -- 立即激活当前角色无敌
+        local Character = LocalPlayer.Character
+        if Character then
+            local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+            if Humanoid then
+                SetGodMode(Humanoid)
+            end
+        end
+    else
+        GodModeButton.Text = "God Mode: OFF"
+        GodModeButton.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
+        
+        -- 关闭无敌时断开连接
+        if HumanoidConnection then
+            HumanoidConnection:Disconnect()
+            HumanoidConnection = nil
+        end
+    end
+end
+
+-- 5. 角色生成/复活时自动绑定（修复切换角色失效）
+local function OnCharacterAdded(Character)
+    -- 等待人形对象加载完成（延长超时，适配低性能设备）
+    local Humanoid = Character:WaitForChild("Humanoid", 10)
+    if not Humanoid then return end
+
+    -- 若无敌已开启，自动绑定
+    if GodModeEnabled then
+        SetGodMode(Humanoid)
+    end
+end
+
+-- 6. 绑定事件（确保初始化生效）
+GodModeButton.MouseButton1Click:Connect(ToggleGodMode)
+LocalPlayer.CharacterAdded:Connect(OnCharacterAdded)
+
+-- 初始化当前角色（修复首次加载无效）
+if LocalPlayer.Character then
+    OnCharacterAdded(LocalPlayer.Character)
+end
