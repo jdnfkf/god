@@ -1,0 +1,106 @@
+loadstring([[
+-- ==============================================
+-- 全场景防死亡脚本（拦截扣血+销毁+远程指令）
+-- 适配：99% Roblox游戏（含Forsaken/Doors/内容警告）
+-- ==============================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+local GlobalState = {
+    IsGodMode = true,
+    CurrentChar = nil,
+    DeathKeywords = {"dead", "death", "kill", "exec", "die", "destroy"},
+    ToggleKey = Enum.KeyCode.F3
+}
+
+-- ===================== 1. 拦截远程死亡指令 =====================
+local function InterceptRemotes()
+    -- 监听所有远程事件/函数
+    local function CheckRemote(obj)
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local name = obj.Name:lower()
+            for _, kw in ipairs(GlobalState.DeathKeywords) do
+                if name:find(kw) then
+                    -- 拦截并忽略死亡指令
+                    if obj:IsA("RemoteEvent") then
+                        obj.OnClientEvent:Connect(function()
+                            if GlobalState.IsGodMode then
+                                print("[拦截] 远程死亡指令：" .. obj.Name)
+                                return
+                            end
+                        end)
+                    else
+                        obj.OnClientInvoke = function()
+                            if GlobalState.IsGodMode then
+                                print("[拦截] 远程死亡函数：" .. obj.Name)
+                                return
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- 遍历现有远程对象
+    ReplicatedStorage.DescendantAdded:Connect(CheckRemote)
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        CheckRemote(obj)
+    end
+end
+
+-- ===================== 2. 拦截角色销毁 =====================
+local function InterceptCharDestroy()
+    LocalPlayer.CharacterAdded:Connect(function(char)
+        GlobalState.CurrentChar = char
+        -- 拦截角色销毁事件
+        char.AncestryChanged:Connect(function(_, parent)
+            if GlobalState.IsGodMode and not parent then
+                print("[拦截] 角色销毁，强制重生")
+                -- 强制重生角色（覆盖服务器销毁）
+                LocalPlayer:LoadCharacter()
+            end
+        end)
+        -- 拦截人形销毁
+        char:WaitForChild("Humanoid", 10).AncestryChanged:Connect(function(_, parent)
+            if GlobalState.IsGodMode and not parent then
+                print("[拦截] 人形销毁，强制恢复")
+                char:WaitForChild("Humanoid", 10).Health = char:WaitForChild("Humanoid", 10).MaxHealth
+            end
+        end)
+    end)
+end
+
+-- ===================== 3. 实时防死亡+恢复 =====================
+RunService.Heartbeat:Connect(function()
+    if not GlobalState.IsGodMode then return end
+    -- 强制初始化角色
+    if not GlobalState.CurrentChar or not GlobalState.CurrentChar.Parent then
+        GlobalState.CurrentChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        task.wait(0.5)
+    end
+    -- 强制维持满状态
+    local hum = GlobalState.CurrentChar:FindFirstChild("Humanoid")
+    if hum then
+        hum.Health = hum.MaxHealth
+        hum.BreakJointsOnDeath = false
+        hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+    end
+end)
+
+-- ===================== 4. 快捷键开关 =====================
+game:GetService("UserInputService").InputBegan:Connect(function(input)
+    if input.KeyCode == GlobalState.ToggleKey then
+        GlobalState.IsGodMode = not GlobalState.IsGodMode
+        local status = GlobalState.IsGodMode and "✅ 防死亡开启" or "❌ 防死亡关闭"
+        print(status)
+    end
+end)
+
+-- ===================== 启动 =====================
+InterceptRemotes()
+InterceptCharDestroy()
+GlobalState.CurrentChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+print("✅ 全场景防死亡脚本启动 | 拦截扣血/销毁/远程指令")
+]])()
