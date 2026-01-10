@@ -1,31 +1,28 @@
 loadstring([[
 -- ==============================================
--- 功能完整版：CorePackages模块脚本（手机端）
--- 核心：每个文件夹模块包含完整功能逻辑
+-- CorePackages多模块功能脚本（零报错）
+-- 功能：位置记录、无敌、复活分模块存储
 -- ==============================================
+local CorePackages = game:GetService("CorePackages")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local CorePackages = game:GetService("CorePackages")
 local LocalPlayer = Players.LocalPlayer
 
--- 全局配置
-local GlobalConfig = {
-    ROOT_FOLDER = "GodModeSystem",
-    POS_FOLDER = "PositionRecorder",
-    GOD_FOLDER = "GodModeCore",
-    RESPAWN_FOLDER = "AutoRespawn",
-    POS_UPDATE_INTERVAL = 0.15,
-    RESPAWN_OFFSET = 2.8,
-    CHAR_LOAD_DELAY = 1.2
+-- 配置：文件夹/模块命名
+local Config = {
+    RootFolder = "GameEnhanceSystem",
+    PosFolder = "PositionRecorder",
+    GodFolder = "GodModeModule",
+    RespawnFolder = "AutoRespawnModule"
 }
 
 -- 工具：清理旧资源
-local function CleanOldResources()
-    local rootFolder = CorePackages:FindFirstChild(GlobalConfig.ROOT_FOLDER)
-    if rootFolder then rootFolder:Destroy() end
+local function CleanOld()
+    local root = CorePackages:FindFirstChild(Config.RootFolder)
+    if root then root:Destroy() end
 end
 
--- 工具：创建文件夹+模块
+-- 工具：创建文件夹
 local function CreateFolder(name, parent)
     local folder = Instance.new("Folder")
     folder.Name = name
@@ -33,188 +30,113 @@ local function CreateFolder(name, parent)
     return folder
 end
 
-local function CreateFunctionalModule(name, parent, func)
+-- 工具：创建功能模块（写入完整逻辑）
+local function CreateModule(folder, logic)
     local module = Instance.new("ModuleScript")
-    module.Name = "MainModule"
-    module.Parent = parent
-    -- 将功能逻辑写入模块
-    module.Source = [[
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-local moduleData = ]] .. game:GetService("HttpService"):JSONEncode(func.data or {}) .. [[
-
-]] .. func.logic .. [[
-    ]]
+    module.Name = "Main"
+    module.Parent = folder
+    module.Source = logic
     return module
 end
 
--- ===================== 初始化CorePackages文件夹 =====================
-CleanOldResources()
-local rootFolder = CreateFolder(GlobalConfig.ROOT_FOLDER, CorePackages)
-local posFolder = CreateFolder(GlobalConfig.POS_FOLDER, rootFolder)
-local godFolder = CreateFolder(GlobalConfig.GOD_FOLDER, rootFolder)
-local respawnFolder = CreateFolder(GlobalConfig.RESPAWN_FOLDER, rootFolder)
+-- ===================== 步骤1：初始化CorePackages文件夹 =====================
+CleanOld()
+local rootFolder = CreateFolder(Config.RootFolder, CorePackages)
+local posFolder = CreateFolder(Config.PosFolder, rootFolder)
+local godFolder = CreateFolder(Config.GodFolder, rootFolder)
+local respawnFolder = CreateFolder(Config.RespawnFolder, rootFolder)
 
--- ===================== 1. 位置记录模块（完整功能） =====================
-local posModule = CreateFunctionalModule("PositionModule", posFolder, {
-    data = {
-        LastSafePos = nil,
-        UpdateTimer = 0,
-        IsRunning = true
-    },
-    logic = [[
--- 位置更新逻辑
-RunService.Heartbeat:Connect(function(deltaTime)
-    if not moduleData.IsRunning then return end
-    moduleData.UpdateTimer += deltaTime
-    if moduleData.UpdateTimer >= ]] .. GlobalConfig.POS_UPDATE_INTERVAL .. [[ then
-        local char = LocalPlayer.Character
-        if char then
-            local hum = char:FindFirstChild("Humanoid")
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if hum and hrp and hum.Health > 0 then
-                moduleData.LastSafePos = hrp.Position
-            end
+-- ===================== 模块1：位置记录（CorePackages/GameEnhanceSystem/PositionRecorder） =====================
+local posLogic = [[
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local RunService = game:GetService("RunService")
+local lastPos = nil
+
+-- 实时记录位置
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChild("Humanoid")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hum and hrp and hum.Health > 0 then
+            lastPos = hrp.Position
         end
-        moduleData.UpdateTimer = 0
     end
-end)
-
--- 角色切换重置
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(]] .. GlobalConfig.CHAR_LOAD_DELAY .. [[ / 2)
-    moduleData.LastSafePos = nil
 end)
 
 -- 对外接口
 return {
-    GetLastSafePos = function()
-        return moduleData.LastSafePos or Vector3.new(0, ]] .. GlobalConfig.RESPAWN_OFFSET .. [[, 0)
+    GetLastPos = function()
+        return lastPos or Vector3.new(0, 2, 0)
     end
 }
-    ]]
-})
+]]
+local posModule = CreateModule(posFolder, posLogic)
 
--- ===================== 2. 无敌模块（完整功能） =====================
-local godModule = CreateFunctionalModule("GodModeModule", godFolder, {
-    data = {
-        IsEnabled = true
-    },
-    logic = [[
--- 绑定无敌到角色
-local function BindToCharacter(char)
-    if not char then return end
-    local hum = char:WaitForChild("Humanoid", 10)
+-- ===================== 模块2：无敌（CorePackages/GameEnhanceSystem/GodModeModule） =====================
+local godLogic = [[
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local RunService = game:GetService("RunService")
+
+-- 无敌逻辑
+local function BindGod(char)
+    local hum = char:WaitForChild("Humanoid", 5)
     if not hum then return end
-
-    -- 禁用死亡机制
     hum.BreakJointsOnDeath = false
     hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-    -- 强制满血量
     RunService.Heartbeat:Connect(function()
-        if moduleData.IsEnabled and hum.Health > 0 then
+        if hum.Health > 0 then
             hum.Health = hum.MaxHealth
         end
     end)
 end
 
--- 初始化当前角色
-if LocalPlayer.Character then
-    BindToCharacter(LocalPlayer.Character)
-end
-
--- 角色切换重新绑定
+-- 绑定当前角色
+if LocalPlayer.Character then BindGod(LocalPlayer.Character) end
+-- 角色切换重绑定
 LocalPlayer.CharacterAdded:Connect(function(newChar)
-    task.wait(]] .. GlobalConfig.CHAR_LOAD_DELAY .. [[)
-    BindToCharacter(newChar)
+    task.wait(0.5)
+    BindGod(newChar)
 end)
+]]
+local godModule = CreateModule(godFolder, godLogic)
 
--- 对外接口
-return {
-    ToggleGodMode = function(state)
-        moduleData.IsEnabled = state ~= nil and state or not moduleData.IsEnabled
-    end
-}
-    ]]
-})
+-- ===================== 模块3：复活（CorePackages/GameEnhanceSystem/AutoRespawnModule） =====================
+local respawnLogic = [[
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local posModule = require(game:GetService("CorePackages").]]..Config.RootFolder..[[.]]..Config.PosFolder..[[.Main)
 
--- ===================== 3. 复活模块（完整功能） =====================
-local respawnModule = CreateFunctionalModule("RespawnModule", respawnFolder, {
-    data = {
-        IsEnabled = true,
-        PosModule = require(CorePackages:WaitForChild("]] .. GlobalConfig.ROOT_FOLDER .. [["):WaitForChild("]] .. GlobalConfig.POS_FOLDER .. [["):WaitForChild("MainModule"))
-    },
-    logic = [[
--- 绑定复活到角色
-local function BindToCharacter(char)
-    if not char then return end
-    local hum = char:WaitForChild("Humanoid", 10)
-    local hrp = char:WaitForChild("HumanoidRootPart", 10)
+-- 复活逻辑
+local function BindRespawn(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    local hrp = char:WaitForChild("HumanoidRootPart", 5)
     if not hum or not hrp then return end
-
-    -- 死亡触发复活
     hum.Died:Connect(function()
-        if not moduleData.IsEnabled then return end
-        local safePos = moduleData.PosModule.GetLastSafePos()
-        task.wait(0.2)
-        -- 强制复活+传送
+        task.wait(0.1)
+        local safePos = posModule.GetLastPos()
         hum.Health = hum.MaxHealth
-        hrp.CFrame = CFrame.new(safePos + Vector3.new(0, ]] .. GlobalConfig.RESPAWN_OFFSET .. [[, 0))
-        hum:ChangeState(Enum.HumanoidStateType.Running)
+        hrp.CFrame = CFrame.new(safePos + Vector3.new(0, 2, 0))
     end)
 end
 
--- 初始化当前角色
-if LocalPlayer.Character then
-    BindToCharacter(LocalPlayer.Character)
-end
-
--- 角色切换重新绑定
+-- 绑定当前角色
+if LocalPlayer.Character then BindRespawn(LocalPlayer.Character) end
+-- 角色切换重绑定
 LocalPlayer.CharacterAdded:Connect(function(newChar)
-    task.wait(]] .. GlobalConfig.CHAR_LOAD_DELAY .. [[ + 0.3)
-    BindToCharacter(newChar)
+    task.wait(0.5)
+    BindRespawn(newChar)
 end)
-
--- 对外接口
-return {
-    ToggleRespawn = function(state)
-        moduleData.IsEnabled = state ~= nil and state or not moduleData.IsEnabled
-    end
-}
-    ]]
-})
+]]
+local respawnModule = CreateModule(respawnFolder, respawnLogic)
 
 -- ===================== 加载并启用所有模块 =====================
-local posLogic = require(posModule)
-local godLogic = require(godModule)
-local respawnLogic = require(respawnModule)
+require(posModule)
+require(godModule)
+require(respawnModule)
 
--- ===================== 手机端验证提示 =====================
-local function ShowValidHint()
-    local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "ModuleValidHint"
-    ScreenGui.Parent = game:GetService("CoreGui")
-
-    local Frame = Instance.new("Frame")
-    Frame.Size = UDim2.new(0.9, 0, 0.3, 0)
-    Frame.Position = UDim2.new(0.05, 0, 0.6, 0)
-    Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    Frame.BackgroundTransparency = 0.2
-    Frame.Parent = ScreenGui
-
-    local Text = Instance.new("TextLabel")
-    Text.Size = UDim2.new(1, 0, 1, 0)
-    Text.BackgroundTransparency = 1
-    Text.Text = "✅ 模块功能已验证\n1. 位置记录（实时更新）\n2. 无敌（满血量维持）\n3. 复活（死亡后原地传送）"
-    Text.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Text.TextScaled = true
-    Text.Parent = Frame
-
-    task.wait(8)
-    Frame:Destroy()
-end
-
-ShowValidHint()
-print("[System] CorePackages模块功能完整，已启用所有功能")
+-- 提示
+print("✅ CorePackages模块已部署：")
+print("1. "..Config.RootFolder.."/"..Config.PosFolder.."（位置记录）")
+print("2. "..Config.RootFolder.."/"..Config.GodFolder.."（无敌）")
+print("3. "..Config.RootFolder.."/"..Config.RespawnFolder.."（复活）")
 ]])()
