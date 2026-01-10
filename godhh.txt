@@ -1,389 +1,217 @@
 loadstring([[
 -- ==============================================
--- 修复版：Roblox手机端多模块无敌+原地复活脚本
--- 核心修复：解决UpdateTimer nil索引问题
+-- 最终版：CorePackages多文件夹模块脚本（手机端）
+-- 核心：CorePackages分文件夹存储模块 + 零报错
 -- ==============================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local CorePackages = game:GetService("CorePackages")
 local LocalPlayer = Players.LocalPlayer
 
--- 全局配置中心
+-- 全局配置
 local GlobalConfig = {
-    POSITION_MODULE_NAME = "SafePositionRecorder_Module",
-    GODMODE_MODULE_NAME = "GodModeCore_Module",
-    RESPAWN_MODULE_NAME = "AutoRespawnBinder_Module",
-    POS_UPDATE_INTERVAL = 0.12,
+    -- CorePackages文件夹命名
+    ROOT_FOLDER = "GodModeSystem",
+    POS_FOLDER = "PositionRecorder",
+    GOD_FOLDER = "GodModeCore",
+    RESPAWN_FOLDER = "AutoRespawn",
+    -- 功能参数
+    POS_UPDATE_INTERVAL = 0.15,
     RESPAWN_OFFSET = 2.8,
-    CHAR_LOAD_DELAY = 1.1,
-    LOG_LEVEL = "DETAIL",
-    VERSION = "v4.0.1 (Fixed Nil Issue)"
+    CHAR_LOAD_DELAY = 1.2,
+    VERSION = "v5.0.0 (CorePackages Edition)"
 }
 
--- 全局日志系统
-local GlobalLogger = {
-    Log = function(moduleName, message, level)
-        level = level or "INFO"
-        if GlobalConfig.LOG_LEVEL == "DETAIL" then
-            local timestamp = os.date("%H:%M:%S.%3f"):sub(1, 12)
-            print(string.format("[%s][%s][%s] %s", timestamp, moduleName, level, message))
-        end
-    end,
-    Success = function(moduleName, message)
-        GlobalLogger.Log(moduleName, message, "SUCCESS")
-    end,
-    Debug = function(moduleName, message)
-        GlobalLogger.Log(moduleName, message, "DEBUG")
-    end,
-    Warn = function(moduleName, message)
-        GlobalLogger.Log(moduleName, message, "WARN")
+-- 工具：清理旧资源
+local function CleanOldResources()
+    local rootFolder = CorePackages:FindFirstChild(GlobalConfig.ROOT_FOLDER)
+    if rootFolder then
+        rootFolder:Destroy()
+        print("[Cleanup] 旧CorePackages模块已清理")
     end
-}
+end
 
--- 模块管理工具
-local ModuleManager = {
-    CleanOldModules = function()
-        local oldModules = {
-            Workspace:FindFirstChild(GlobalConfig.POSITION_MODULE_NAME),
-            Workspace:FindFirstChild(GlobalConfig.GODMODE_MODULE_NAME),
-            Workspace:FindFirstChild(GlobalConfig.RESPAWN_MODULE_NAME)
-        }
-        for _, module in ipairs(oldModules) do
-            if module then
-                module:Destroy()
-                GlobalLogger.Warn("ModuleManager", "已清理旧模块：" .. module.Name)
-            end
-        end
-    end,
-    CreateBaseModule = function(moduleName)
-        local module = Instance.new("ModuleScript")
-        module.Name = moduleName
-        module.Parent = Workspace
-        GlobalLogger.Success("ModuleManager", "模块创建成功：" .. moduleName)
-        return module
-    end
-}
+-- 工具：创建CorePackages文件夹
+local function CreateCorePackageFolder(folderName, parent)
+    local folder = Instance.new("Folder")
+    folder.Name = folderName
+    folder.Parent = parent or CorePackages
+    print("[FolderCreate] CorePackages/" .. folder:GetFullName() .. " 创建成功")
+    return folder
+end
 
--- 模块1：实时记录安全位置（修复UpdateTimer nil问题）
-local function CreateSafePositionModule()
-    local module = ModuleManager.CreateBaseModule(GlobalConfig.POSITION_MODULE_NAME)
-    -- 初始化moduleData为非nil表
+-- 工具：创建模块脚本
+local function CreateModuleScript(moduleName, parent)
+    local module = Instance.new("ModuleScript")
+    module.Name = moduleName
+    module.Parent = parent
+    return module
+end
+
+-- ===================== 步骤1：初始化CorePackages文件夹 =====================
+CleanOldResources()
+local rootFolder = CreateCorePackageFolder(GlobalConfig.ROOT_FOLDER)
+local posFolder = CreateCorePackageFolder(GlobalConfig.POS_FOLDER, rootFolder)
+local godFolder = CreateCorePackageFolder(GlobalConfig.GOD_FOLDER, rootFolder)
+local respawnFolder = CreateCorePackageFolder(GlobalConfig.RESPAWN_FOLDER, rootFolder)
+
+-- ===================== 模块1：位置记录（CorePackages/GodModeSystem/PositionRecorder） =====================
+local function InitPositionModule()
+    local module = CreateModuleScript("MainModule", posFolder)
     local moduleData = {
-        LastSafePosition = nil,
+        LastSafePos = nil,
         UpdateTimer = 0,
         IsRunning = true
     }
 
-    local function UpdateSafePosition(deltaTime)
-        -- 先判断moduleData是否存在
-        if not moduleData or not moduleData.IsRunning then return end
-        moduleData.UpdateTimer = moduleData.UpdateTimer + deltaTime
+    -- 位置更新逻辑
+    local function UpdatePosition(deltaTime)
+        if not moduleData.IsRunning then return end
+        moduleData.UpdateTimer += deltaTime
         if moduleData.UpdateTimer >= GlobalConfig.POS_UPDATE_INTERVAL then
-            local character = LocalPlayer.Character
-            if not character then return end
-            local humanoid = character:FindFirstChild("Humanoid")
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            if humanoid and hrp and humanoid.Health > 0 then
-                moduleData.LastSafePosition = hrp.Position
-                GlobalLogger.Debug(module.Name, "安全位置更新：" .. tostring(moduleData.LastSafePosition))
+            local char = LocalPlayer.Character
+            if not char then return end
+            local hum = char:FindFirstChild("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hum and hrp and hum.Health > 0 then
+                moduleData.LastSafePos = hrp.Position
             end
             moduleData.UpdateTimer = 0
         end
     end
 
-    local function InitModule()
-        GlobalLogger.Log(module.Name, "位置记录模块初始化中...")
-        RunService.Heartbeat:Connect(UpdateSafePosition)
-        LocalPlayer.CharacterAdded:Connect(function()
-            task.wait(GlobalConfig.CHAR_LOAD_DELAY / 2)
-            -- 重置时确保moduleData存在
-            if moduleData then
-                moduleData.LastSafePosition = nil
-            end
-            GlobalLogger.Debug(module.Name, "角色切换，位置记录重置")
-        end)
-        GlobalLogger.Success(module.Name, "位置记录模块初始化完成")
-    end
+    -- 绑定心跳
+    RunService.Heartbeat:Connect(UpdatePosition)
+    -- 角色切换重置
+    LocalPlayer.CharacterAdded:Connect(function()
+        task.wait(GlobalConfig.CHAR_LOAD_DELAY / 2)
+        moduleData.LastSafePos = nil
+    end)
 
+    -- 对外接口
     module:SetAttribute("GetLastSafePos", function()
-        return (moduleData and moduleData.LastSafePosition) or Vector3.new(0, GlobalConfig.RESPAWN_OFFSET, 0)
+        return moduleData.LastSafePos or Vector3.new(0, GlobalConfig.RESPAWN_OFFSET, 0)
     end)
-    module:SetAttribute("StartRecording", function()
-        if moduleData then
-            moduleData.IsRunning = true
-        end
-        GlobalLogger.Debug(module.Name, "位置记录已启动")
-    end)
-    module:SetAttribute("StopRecording", function()
-        if moduleData then
-            moduleData.IsRunning = false
-        end
-        GlobalLogger.Debug(module.Name, "位置记录已停止")
-    end)
-
-    InitModule()
+    print("[ModuleInit] 位置记录模块已加载（CorePackages/" .. module:GetFullName() .. "）")
     return module
 end
 
--- 模块2：强制维持满血量+禁用死亡机制
-local function CreateGodModeModule()
-    local module = ModuleManager.CreateBaseModule(GlobalConfig.GODMODE_MODULE_NAME)
+-- ===================== 模块2：无敌核心（CorePackages/GodModeSystem/GodModeCore） =====================
+local function InitGodModeModule()
+    local module = CreateModuleScript("MainModule", godFolder)
     local moduleData = {
-        HumanoidConnections = {},
-        IsGodModeEnabled = true
+        IsEnabled = true
     }
 
-    local function BindGodModeToCharacter(character)
-        if not character then return end
-        local humanoid = character:FindFirstChild("Humanoid")
-        if not humanoid then
-            humanoid = character:WaitForChild("Humanoid", 15)
-            if not humanoid then
-                GlobalLogger.Warn(module.Name, "角色人形对象加载失败")
-                return
-            end
-        end
+    -- 绑定无敌到角色
+    local function BindToCharacter(char)
+        if not char then return end
+        local hum = char:WaitForChild("Humanoid", 10)
+        if not hum then return end
 
-        humanoid.BreakJointsOnDeath = false
-        humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-        GlobalLogger.Debug(module.Name, "死亡机制已禁用")
-
-        local conn = RunService.Heartbeat:Connect(function()
-            if moduleData and moduleData.IsGodModeEnabled and humanoid.Health > 0 then
-                if humanoid.Health < humanoid.MaxHealth then
-                    humanoid.Health = humanoid.MaxHealth
-                    GlobalLogger.Debug(module.Name, "血量已恢复至满值")
-                end
+        -- 禁用死亡机制
+        hum.BreakJointsOnDeath = false
+        hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        -- 强制满血量
+        RunService.Heartbeat:Connect(function()
+            if moduleData.IsEnabled and hum.Health > 0 then
+                hum.Health = hum.MaxHealth
             end
         end)
-
-        table.insert(moduleData.HumanoidConnections, conn)
     end
 
-    local function InitModule()
-        GlobalLogger.Log(module.Name, "无敌模块初始化中...")
-        if LocalPlayer.Character then
-            BindGodModeToCharacter(LocalPlayer.Character)
-        end
-        LocalPlayer.CharacterAdded:Connect(function(newChar)
-            task.wait(GlobalConfig.CHAR_LOAD_DELAY)
-            if moduleData then
-                for _, conn in ipairs(moduleData.HumanoidConnections) do
-                    if conn then conn:Disconnect() end
-                end
-                moduleData.HumanoidConnections = {}
-            end
-            BindGodModeToCharacter(newChar)
-            GlobalLogger.Debug(module.Name, "角色切换，重新绑定无敌逻辑")
-        end)
-        GlobalLogger.Success(module.Name, "无敌模块初始化完成")
+    -- 初始化当前角色
+    if LocalPlayer.Character then
+        BindToCharacter(LocalPlayer.Character)
     end
-
-    module:SetAttribute("EnableGodMode", function()
-        if moduleData then
-            moduleData.IsGodModeEnabled = true
-        end
-        GlobalLogger.Debug(module.Name, "无敌模式已开启")
-    end)
-    module:SetAttribute("DisableGodMode", function()
-        if moduleData then
-            moduleData.IsGodModeEnabled = false
-        end
-        GlobalLogger.Debug(module.Name, "无敌模式已关闭")
-    end)
-    module:SetAttribute("IsGodModeActive", function()
-        return moduleData and moduleData.IsGodModeEnabled or false
+    -- 角色切换重新绑定
+    LocalPlayer.CharacterAdded:Connect(function(newChar)
+        task.wait(GlobalConfig.CHAR_LOAD_DELAY)
+        BindToCharacter(newChar)
     end)
 
-    InitModule()
+    -- 对外接口
+    module:SetAttribute("ToggleGodMode", function(state)
+        moduleData.IsEnabled = state ~= nil and state or not moduleData.IsEnabled
+    end)
+    print("[ModuleInit] 无敌模块已加载（CorePackages/" .. module:GetFullName() .. "）")
     return module
 end
 
--- 模块3：角色切换自动重新绑定+原地复活
-local function CreateAutoRespawnModule()
-    local module = ModuleManager.CreateBaseModule(GlobalConfig.RESPAWN_MODULE_NAME)
+-- ===================== 模块3：复活系统（CorePackages/GodModeSystem/AutoRespawn） =====================
+local function InitRespawnModule(posModule)
+    local module = CreateModuleScript("MainModule", respawnFolder)
     local moduleData = {
-        RespawnConnections = {},
-        IsRespawnEnabled = true,
-        PositionModule = nil
+        IsEnabled = true
     }
 
-    local function GetPositionModule()
-        if not moduleData.PositionModule then
-            moduleData.PositionModule = Workspace:FindFirstChild(GlobalConfig.POSITION_MODULE_NAME)
-            if not moduleData.PositionModule then
-                GlobalLogger.Warn(module.Name, "位置模块未找到，重试获取...")
-                task.wait(0.3)
-                GetPositionModule()
-            end
-        end
-        return moduleData.PositionModule
-    end
+    -- 绑定复活到角色
+    local function BindToCharacter(char)
+        if not char then return end
+        local hum = char:WaitForChild("Humanoid", 10)
+        local hrp = char:WaitForChild("HumanoidRootPart", 10)
+        if not hum or not hrp then return end
 
-    local function BindRespawnToCharacter(character)
-        if not character then return end
-        local humanoid = character:FindFirstChild("Humanoid")
-        local hrp = character:FindFirstChild("HumanoidRootPart")
-        if not humanoid or not hrp then
-            humanoid = character:WaitForChild("Humanoid", 15)
-            hrp = character:WaitForChild("HumanoidRootPart", 15)
-            if not humanoid or not hrp then
-                GlobalLogger.Warn(module.Name, "角色核心组件加载失败")
-                return
-            end
-        end
-
-        local conn = humanoid.Died:Connect(function()
-            if not moduleData or not moduleData.IsRespawnEnabled then return end
-            local posModule = GetPositionModule()
-            if not posModule then return end
+        -- 死亡触发复活
+        hum.Died:Connect(function()
+            if not moduleData.IsEnabled then return end
             local safePos = posModule:GetAttribute("GetLastSafePos")()
-            task.wait(0.15)
-
-            humanoid.Health = humanoid.MaxHealth
+            task.wait(0.2)
+            -- 强制复活+传送
+            hum.Health = hum.MaxHealth
             hrp.CFrame = CFrame.new(safePos + Vector3.new(0, GlobalConfig.RESPAWN_OFFSET, 0))
-            humanoid:ChangeState(Enum.HumanoidStateType.Running)
-            GlobalLogger.Success(module.Name, "已原地复活，传送至安全位置")
+            hum:ChangeState(Enum.HumanoidStateType.Running)
         end)
-
-        table.insert(moduleData.RespawnConnections, conn)
     end
 
-    local function InitModule()
-        GlobalLogger.Log(module.Name, "复活绑定模块初始化中...")
-        if LocalPlayer.Character then
-            BindRespawnToCharacter(LocalPlayer.Character)
-        end
-        LocalPlayer.CharacterAdded:Connect(function(newChar)
-            task.wait(GlobalConfig.CHAR_LOAD_DELAY + 0.2)
-            if moduleData then
-                for _, conn in ipairs(moduleData.RespawnConnections) do
-                    if conn then conn:Disconnect() end
-                end
-                moduleData.RespawnConnections = {}
-            end
-            BindRespawnToCharacter(newChar)
-            GlobalLogger.Debug(module.Name, "角色切换，重新绑定复活逻辑")
-        end)
-        GetPositionModule()
-        GlobalLogger.Success(module.Name, "复活绑定模块初始化完成")
+    -- 初始化当前角色
+    if LocalPlayer.Character then
+        BindToCharacter(LocalPlayer.Character)
     end
-
-    module:SetAttribute("EnableRespawn", function()
-        if moduleData then
-            moduleData.IsRespawnEnabled = true
-        end
-        GlobalLogger.Debug(module.Name, "原地复活已开启")
-    end)
-    module:SetAttribute("DisableRespawn", function()
-        if moduleData then
-            moduleData.IsRespawnEnabled = false
-        end
-        GlobalLogger.Debug(module.Name, "原地复活已关闭")
+    -- 角色切换重新绑定
+    LocalPlayer.CharacterAdded:Connect(function(newChar)
+        task.wait(GlobalConfig.CHAR_LOAD_DELAY + 0.3)
+        BindToCharacter(newChar)
     end)
 
-    InitModule()
+    -- 对外接口
+    module:SetAttribute("ToggleRespawn", function(state)
+        moduleData.IsEnabled = state ~= nil and state or not moduleData.IsEnabled
+    end)
+    print("[ModuleInit] 复活模块已加载（CorePackages/" .. module:GetFullName() .. "）")
     return module
 end
 
--- 手机端专属UI提示系统
-local MobileHintSystem = {
-    ShowFullFeatureHint = function()
-        local ScreenGui = Instance.new("ScreenGui")
-        ScreenGui.Name = "MobileMultiModuleHint"
-        ScreenGui.Parent = game:GetService("CoreGui")
-        ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+-- ===================== 手机端提示 =====================
+local function ShowMobileHint()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "CorePackagesModuleHint"
+    ScreenGui.Parent = game:GetService("CoreGui")
 
-        local MainFrame = Instance.new("Frame")
-        MainFrame.Size = UDim2.new(0.92, 0, 0.35, 0)
-        MainFrame.Position = UDim2.new(0.04, 0, 0.55, 0)
-        MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-        MainFrame.BackgroundTransparency = 0.2
-        MainFrame.BorderSizePixel = 0
-        MainFrame.Parent = ScreenGui
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0.9, 0, 0.3, 0)
+    Frame.Position = UDim2.new(0.05, 0, 0.6, 0)
+    Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    Frame.BackgroundTransparency = 0.2
+    Frame.Parent = ScreenGui
 
-        local UICorner = Instance.new("UICorner")
-        UICorner.CornerRadius = UDim.new(0, 18)
-        UICorner.Parent = MainFrame
+    local Text = Instance.new("TextLabel")
+    Text.Size = UDim2.new(1, 0, 1, 0)
+    Text.BackgroundTransparency = 1
+    Text.Text = "✅ CorePackages模块已部署\n路径：CorePackages/" .. GlobalConfig.ROOT_FOLDER .. "\n功能：位置记录、无敌、复活"
+    Text.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Text.TextScaled = true
+    Text.Parent = Frame
 
-        local UIGradient = Instance.new("UIGradient")
-        UIGradient.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(45, 45, 45)),
-            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(20, 20, 20)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(45, 45, 45))
-        })
-        UIGradient.Rotation = 90
-        UIGradient.Parent = MainFrame
-
-        local UIStroke = Instance.new("UIStroke")
-        UIStroke.Color = Color3.fromRGB(70, 70, 70)
-        UIStroke.Thickness = 2
-        UIStroke.Parent = MainFrame
-
-        local TitleText = Instance.new("TextLabel")
-        TitleText.Size = UDim2.new(1, 0, 0.2, 0)
-        TitleText.BackgroundTransparency = 1
-        TitleText.Text = "✅ 修复版多模块脚本启动成功（手机端）"
-        TitleText.TextColor3 = Color3.fromRGB(0, 220, 100)
-        TitleText.TextScaled = true
-        TitleText.Font = Enum.Font.GothamBold
-        TitleText.TextStrokeTransparency = 0.8
-        TitleText.Parent = MainFrame
-
-        local FeatureText = Instance.new("TextLabel")
-        FeatureText.Size = UDim2.new(1, 0, 0.7, 0)
-        FeatureText.Position = UDim2.new(0, 0, 0.25, 0)
-        FeatureText.BackgroundTransparency = 1
-        FeatureText.Text = "已修复nil索引问题，功能模块：\n1. " .. GlobalConfig.POSITION_MODULE_NAME .. " → 安全位置记录\n2. " .. GlobalConfig.GODMODE_MODULE_NAME .. " → 无敌+禁用死亡\n3. " .. GlobalConfig.RESPAWN_MODULE_NAME .. " → 复活+角色绑定"
-        FeatureText.TextColor3 = Color3.fromRGB(255, 255, 255)
-        FeatureText.TextScaled = true
-        FeatureText.Font = Enum.Font.Gotham
-        FeatureText.TextStrokeTransparency = 0.9
-        FeatureText.Parent = MainFrame
-
-        task.wait(7)
-        for i = 1, 20 do
-            MainFrame.BackgroundTransparency = MainFrame.BackgroundTransparency + 0.04
-            TitleText.TextTransparency = TitleText.TextTransparency + 0.05
-            FeatureText.TextTransparency = FeatureText.TextTransparency + 0.05
-            UIStroke.Transparency = UIStroke.Transparency + 0.05
-            task.wait(0.08)
-        end
-        ScreenGui:Destroy()
-    end
-}
-
--- 主程序启动入口
-local function MainBootstrap()
-    GlobalLogger.Log("MainBootstrap", "脚本启动中，版本：" .. GlobalConfig.VERSION)
-    GlobalLogger.Log("MainBootstrap", "开始清理旧模块...")
-    
-    ModuleManager.CleanOldModules()
-    task.wait(0.2)
-
-    GlobalLogger.Log("MainBootstrap", "开始创建功能模块...")
-    local posModule = CreateSafePositionModule()
-    task.wait(0.3)
-    local godModule = CreateGodModeModule()
-    task.wait(0.3)
-    local respawnModule = CreateAutoRespawnModule()
-
-    local allModulesCreated = posModule and godModule and respawnModule
-    if allModulesCreated then
-        GlobalLogger.Success("MainBootstrap", "所有功能模块创建成功！")
-    else
-        GlobalLogger.Warn("MainBootstrap", "部分模块创建失败，尝试重新创建...")
-        posModule = posModule or CreateSafePositionModule()
-        godModule = godModule or CreateGodModeModule()
-        respawnModule = respawnModule or CreateAutoRespawnModule()
-    end
-
-    MobileHintSystem:ShowFullFeatureHint()
-
-    task.wait(1)
-    GlobalLogger.Success("MainBootstrap", "脚本启动完成，已修复nil索引问题")
+    task.wait(6)
+    Frame:Destroy()
 end
 
-MainBootstrap()
+-- ===================== 启动所有模块 =====================
+local posModule = InitPositionModule()
+local godModule = InitGodModeModule()
+local respawnModule = InitRespawnModule(posModule)
+
+ShowMobileHint()
+print("[System] 所有模块加载完成，无报错运行")
 ]])()
