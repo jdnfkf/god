@@ -1,96 +1,71 @@
 loadstring([[
 -- ==============================================
--- Forsaken类游戏防处决终极脚本（破解服务器死亡标记）
--- 核心：拦截服务器死亡状态同步+强制覆盖角色数据
+-- 破解服务器死亡状态标记脚本（适配当前游戏）
+-- 核心：覆盖服务器玩家状态数据，强制标记为存活
 -- ==============================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
--- 全局状态（锁定角色数据）
 local GlobalState = {
-    Char = nil,
-    Hum = nil,
-    HRP = nil,
     IsGodMode = true,
-    -- 拦截服务器死亡指令的关键词（适配该游戏）
-    DeathRemoteKeywords = {"SetDead", "MarkDeath", "ExecPlayer"},
     ToggleKey = Enum.KeyCode.F3
 }
 
--- ===================== 拦截服务器死亡指令 =====================
-local function InterceptDeathRemotes()
-    -- 监听所有RemoteEvent（拦截服务器死亡指令）
-    for _, remote in ipairs(ReplicatedStorage:GetDescendants()) do
-        if remote:IsA("RemoteEvent") then
-            -- 匹配死亡相关指令关键词
-            local remoteName = remote.Name:lower()
-            for _, keyword in ipairs(GlobalState.DeathRemoteKeywords) do
-                if remoteName:find(keyword:lower()) then
-                    -- 拦截并替换死亡指令
-                    local originalFire = remote.OnClientEvent:Connect(function() end)
-                    remote.OnClientEvent:Disconnect()
-                    remote.OnClientEvent:Connect(function(...)
-                        if GlobalState.IsGodMode then
-                            print("[RemoteIntercept] 拦截服务器死亡指令：" .. remote.Name)
-                            -- 强制恢复角色状态
-                            GlobalState.Hum.Health = GlobalState.Hum.MaxHealth
-                            return
-                        end
-                        originalFire(...)
-                    end)
-                end
-            end
+-- ===================== 1. 强制覆盖服务器玩家状态 =====================
+local function OverridePlayerState()
+    -- 拦截玩家状态属性修改（如IsDead、State）
+    local playerObj = LocalPlayer
+    local mt = getrawmetatable(playerObj)
+    setreadonly(mt, false)
+    local oldIndex = mt.__index
+    local oldNewIndex = mt.__newindex
+
+    -- 拦截属性读取：强制返回存活状态
+    mt.__index = function(t, k)
+        if GlobalState.IsGodMode and (k:lower() == "isdead" or k:lower() == "state" or k:lower() == "alive") then
+            return false -- 强制标记为未死亡
         end
+        return oldIndex(t, k)
     end
-    print("[RemoteIntercept] 已拦截服务器死亡指令")
-end
 
--- ===================== 强制锁定角色状态 =====================
-local function ForceInitChar()
-    GlobalState.Char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-    task.wait(2) -- 适配该游戏服务器同步延迟
-    
-    GlobalState.Hum = GlobalState.Char:WaitForChild("Humanoid", 15)
-    GlobalState.HRP = GlobalState.Char:WaitForChild("HumanoidRootPart", 15)
-    
-    -- 强制覆盖角色死亡状态（服务器标记后重置）
-    GlobalState.Hum:GetPropertyChangedSignal("Health"):Connect(function()
-        if GlobalState.IsGodMode and GlobalState.Hum.Health <= 0 then
-            GlobalState.Hum.Health = GlobalState.Hum.MaxHealth
-            print("[HealthLock] 破解服务器死亡标记，恢复状态")
+    -- 拦截属性修改：阻止服务器标记死亡
+    mt.__newindex = function(t, k, v)
+        if GlobalState.IsGodMode and (k:lower() == "isdead" or k:lower() == "state") then
+            print("[拦截] 服务器尝试标记死亡，强制忽略")
+            return
         end
-    end)
+        oldNewIndex(t, k, v)
+    end
+    setreadonly(mt, true)
+    print("[StateOverride] 已强制覆盖服务器玩家状态")
 end
 
--- ===================== 实时拦截+快捷键 =====================
+-- ===================== 2. 实时维持客户端存活状态 =====================
 RunService.Heartbeat:Connect(function()
     if not GlobalState.IsGodMode then return end
-    if not GlobalState.Char then ForceInitChar() return end
-    
-    -- 1. 强制禁用服务器死亡状态
-    GlobalState.Hum.BreakJointsOnDeath = false
-    GlobalState.Hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-    -- 2. 强制维持满血量（覆盖服务器扣血）
-    GlobalState.Hum.Health = GlobalState.Hum.MaxHealth
-    -- 3. 强制解除处决动画
-    for _, track in ipairs(GlobalState.Hum:GetPlayingAnimationTracks()) do
-        if track.Name:lower():find("exec") then track:Stop() end
+    -- 强制初始化角色
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hum = char:FindFirstChild("Humanoid")
+    if hum then
+        hum.Health = hum.MaxHealth
+        hum.BreakJointsOnDeath = false
+    end
+    -- 强制同步存活状态到游戏UI
+    if LocalPlayer:FindFirstChild("IsDead") then
+        LocalPlayer.IsDead.Value = false
     end
 end)
 
--- 快捷键开关
+-- ===================== 3. 快捷键开关 =====================
 game:GetService("UserInputService").InputBegan:Connect(function(input)
     if input.KeyCode == GlobalState.ToggleKey then
         GlobalState.IsGodMode = not GlobalState.IsGodMode
-        local status = GlobalState.IsGodMode and "✅ 防处决开启" or "❌ 防处决关闭"
-        print(status)
+        print(GlobalState.IsGodMode and "✅ 强制存活开启" or "❌ 强制存活关闭")
     end
 end)
 
--- 启动逻辑
-ForceInitChar()
-InterceptDeathRemotes()
-print("✅ 适配Forsaken类游戏防处决脚本启动 | 拦截服务器死亡指令")
+-- ===================== 启动 =====================
+OverridePlayerState()
+print("✅ 破解服务器死亡标记脚本启动 | 强制维持存活状态")
 ]])()
