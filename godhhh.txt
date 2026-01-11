@@ -1,389 +1,1660 @@
 loadstring([[
-local player = game:GetService("Players").LocalPlayer
-local RUN_SERVICE = game:GetService("RunService")
-local WORKSPACE = game:GetService("Workspace")
-local REPLICATED_STORAGE = game:GetService("ReplicatedStorage")
-local PLAYER_SERVICE = game:GetService("Players")
-local DEBRIS = game:GetService("Debris")
+-- 手机端通用超强生存脚本（优化版）
+-- 作者：通用脚本适配
+-- 版本：3.0 手机端专用
 
--- 核心配置参数（可根据需求微调）
+-- ==================== 全局服务初始化 ====================
+local PlayerService = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DebrisService = game:GetService("Debris")
+local ScriptContext = game:GetService("ScriptContext")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+
+-- 获取本地玩家
+local LocalPlayer = PlayerService.LocalPlayer
+if not LocalPlayer then
+    repeat wait() until PlayerService.LocalPlayer
+    LocalPlayer = PlayerService.LocalPlayer
+end
+
+-- ==================== 核心配置参数 ====================
 local CONFIG = {
-    HEAL_MULTIPLIER = 9, -- 9倍自动回血速度
-    RESPAWN_DELAY = 0.05, -- 重生延迟（极致快速）
-    MAX_HEAL_CAP = math.huge, -- 回血无上限（锁定最大生命值）
-    BLOCK_GRAB_RANGE = 20, -- 抓取拦截检测范围
-    ANTI_WARP_THRESHOLD = 8, -- 突脸拦截距离阈值（超过则重置）
-    ANTI_SCRIPTED_DEATH_PRIORITY = 100 -- 剧情杀拦截优先级
-}
-
--- 全局状态存储
-local GLOBAL_STATE = {
-    LastDeathCFrame = nil, -- 最后死亡位置
-    IsCharacterLoaded = false, -- 角色加载状态
-    HumanoidReference = nil, -- 人形对象引用
-    CharacterReference = nil, -- 角色模型引用
-    HealConnection = nil, -- 回血连接
-    AntiGrabConnections = {}, -- 抓取拦截连接
-    AntiWarpConnection = nil, -- 突脸拦截连接
-    AntiScriptedDeathConnection = nil, -- 剧情杀拦截连接
-    RespawnLock = false -- 重生锁（防止重复触发）
-}
-
--- 辅助工具函数：安全获取实例
-local function SafeGetInstance(parent, name, className)
-    if not parent then return nil end
-    local instance = parent:FindFirstChild(name)
-    if not instance then
-        instance = parent:WaitForChild(name, 10)
-    end
-    return instance and instance:IsA(className) and instance or nil
-end
-
--- 辅助工具函数：强制断开所有连接
-local function DisconnectAllConnections()
-    if GLOBAL_STATE.HealConnection then
-        GLOBAL_STATE.HealConnection:Disconnect()
-        GLOBAL_STATE.HealConnection = nil
-    end
-    for _, conn in ipairs(GLOBAL_STATE.AntiGrabConnections) do
-        if conn then conn:Disconnect() end
-    end
-    GLOBAL_STATE.AntiGrabConnections = {}
-    if GLOBAL_STATE.AntiWarpConnection then
-        GLOBAL_STATE.AntiWarpConnection:Disconnect()
-        GLOBAL_STATE.AntiWarpConnection = nil
-    end
-    if GLOBAL_STATE.AntiScriptedDeathConnection then
-        GLOBAL_STATE.AntiScriptedDeathConnection:Disconnect()
-        GLOBAL_STATE.AntiScriptedDeathConnection = nil
-    end
-end
-
--- 核心功能1：9倍自动回血（基于最大生命值动态计算）
-local function SetupRapidHealSystem(humanoid)
-    if not humanoid or humanoid.Health <= 0 then return end
-    DisconnectAllConnections() -- 断开旧连接防止冲突
+    -- 回血系统
+    HEAL_MULTIPLIER = 6, -- 6倍自动回血（您要求的倍数）
+    HEAL_BASE_RATE = 0.02, -- 基础回血率2%/秒
+    EMERGENCY_HEAL_THRESHOLD = 0.3, -- 紧急回血阈值（30%血量）
+    EMERGENCY_HEAL_BOOST = 1.8, -- 紧急回血额外倍率
+    HEALTH_CAP = math.huge, -- 生命值上限（无限）
     
-    -- 计算基础回血率（每秒恢复最大生命值的1% × 9倍）
-    local baseHealPerSecond = humanoid.MaxHealth * 0.01 * CONFIG.HEAL_MULTIPLIER
-    GLOBAL_STATE.HealConnection = RUN_SERVICE.Heartbeat:Connect(function(dt)
-        if not humanoid or humanoid.Health <= 0 then return end
-        -- 实时计算回血值，不超过最大生命值
-        local healAmount = baseHealPerSecond * dt
-        humanoid.Health = math.min(humanoid.Health + healAmount, humanoid.MaxHealth, CONFIG.MAX_HEAL_CAP)
-        -- 强制锁定生命值不为0（双重保险）
-        if humanoid.Health <= 0.1 then
-            humanoid.Health = humanoid.MaxHealth * 0.3 -- 保留30%血防止猝死
+    -- 重生系统
+    RESPAWN_DELAY = 0.03, -- 重生延迟（秒）
+    RESPAWN_POSITION_OFFSET = Vector3.new(0, 2.5, 0), -- 重生位置偏移（防卡墙）
+    RESPAWN_POSITION_MEMORY = 10, -- 记住最近10个死亡位置
+    FORCE_RESPAWN_ATTEMPTS = 3, -- 强制重生尝试次数
+    
+    -- 抓取拦截系统
+    ANTI_GRAB_CHECK_INTERVAL = 0.05, -- 抓取检测间隔
+    GRAB_DETECTION_RADIUS = 28, -- 抓取检测半径
+    GRAB_FORCE_THRESHOLD = 7500, -- 抓取力阈值
+    ANTI_GRAB_PUSH_FORCE = 22, -- 反抓取推力
+    
+    -- 突脸拦截系统
+    WARP_DETECTION_THRESHOLD = 12, -- 突脸检测阈值（单位）
+    WARP_ANGLE_THRESHOLD = math.rad(160), -- 角度突变阈值
+    WARP_COOLDOWN = 0.1, -- 突脸拦截冷却时间
+    
+    -- 剧情杀拦截系统
+    SCRIPTED_DEATH_KEYWORDS = {
+        "Kill", "Death", "Die", "Dead", "Execute", "Murder", "Slay", "Destroy",
+        "Eliminate", "Terminate", "Assassinate", "Obliterate", "Annihilate",
+        "ScriptedDeath", "StoryKill", "CutsceneDeath", "PlotDeath",
+        "OneShot", "InstaKill", "InstantKill", "NoEscape",
+        "AdminKill", "ModKill", "SystemKill", "GameKill",
+        "ForceDeath", "CompulsoryDeath", "MandatoryDeath"
+    },
+    
+    -- 远程指令拦截
+    REMOTE_BLOCK_PRIORITY = 999, -- 拦截优先级
+    REMOTE_CHECK_INTERVAL = 0.1, -- 远程检查间隔
+    
+    -- 角色保护系统
+    CRITICAL_BODY_PARTS = {
+        "Head", "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso",
+        "Left Arm", "Right Arm", "Left Leg", "Right Leg"
+    },
+    PART_REPLICATION_DELAY = 0.01, -- 部件复制延迟
+    
+    -- 观战破解系统
+    SPECTATOR_KEYWORDS = {
+        "Spectator", "Spectate", "Observer", "Observing", "Viewer",
+        "Watching", "CameraMode", "DeathCam", "DeadCam", "FollowCam",
+        "Ghost", "GhostMode", "观战", "旁观", "观察者"
+    },
+    
+    -- 性能优化
+    MOBILE_OPTIMIZATION = true, -- 手机端优化
+    CONNECTION_CLEANUP_INTERVAL = 30, -- 连接清理间隔（秒）
+    MEMORY_USAGE_LIMIT = 250, -- 内存使用限制（MB）
+}
+
+-- ==================== 全局状态管理 ====================
+local STATE = {
+    -- 角色状态
+    Character = nil,
+    Humanoid = nil,
+    HumanoidRootPart = nil,
+    
+    -- 系统状态
+    IsInitialized = false,
+    IsCharacterValid = false,
+    IsRespawning = false,
+    IsDead = false,
+    
+    -- 位置记忆
+    DeathPositions = {},
+    LastSafePosition = nil,
+    LastValidCFrame = nil,
+    
+    -- 连接管理
+    Connections = {
+        Heal = {},
+        AntiGrab = {},
+        AntiWarp = {},
+        AntiScriptedDeath = {},
+        AntiDestroy = {},
+        RemoteBlock = {},
+        Respawn = {},
+        Monitor = {},
+        Utility = {}
+    },
+    
+    -- 拦截缓存
+    BlockedRemotes = {},
+    BlockedScripts = {},
+    BlockedInstances = {},
+    
+    -- 性能监控
+    LastCleanupTime = tick(),
+    ConnectionCount = 0,
+    MemoryUsage = 0
+}
+
+-- ==================== 高级工具函数库 ====================
+local Utilities = {}
+
+-- 安全执行函数（防止错误传播）
+function Utilities.SafeCall(func, ...)
+    local success, result = pcall(func, ...)
+    if not success then
+        warn("[安全调用错误]:", result)
+        return nil
+    end
+    return result
+end
+
+-- 延迟执行（避免堆栈溢出）
+function Utilities.DelayedCall(delay, func, ...)
+    local args = {...}
+    coroutine.wrap(function()
+        if delay and delay > 0 then
+            wait(delay)
+        end
+        Utilities.SafeCall(func, unpack(args))
+    end)()
+end
+
+-- 查找实例（带等待和超时）
+function Utilities.FindInstance(parent, name, className, timeout)
+    timeout = timeout or 10
+    if not parent then return nil end
+    
+    -- 立即查找
+    local instance = parent:FindFirstChild(name)
+    if instance and (not className or instance:IsA(className)) then
+        return instance
+    end
+    
+    -- 等待查找
+    local startTime = tick()
+    while tick() - startTime < timeout do
+        instance = parent:FindFirstChild(name)
+        if instance and (not className or instance:IsA(className)) then
+            return instance
+        end
+        
+        -- 检查所有子项
+        for _, child in ipairs(parent:GetChildren()) do
+            if child.Name == name and (not className or child:IsA(className)) then
+                return child
+            end
+        end
+        
+        wait(0.05)
+    end
+    
+    return nil
+end
+
+-- 查找实例后代（递归）
+function Utilities.FindDescendant(parent, name, className)
+    if not parent then return nil end
+    
+    for _, child in ipairs(parent:GetChildren()) do
+        if child.Name == name and (not className or child:IsA(className)) then
+            return child
+        end
+        
+        local found = Utilities.FindDescendant(child, name, className)
+        if found then
+            return found
+        end
+    end
+    
+    return nil
+end
+
+-- 字符串模糊匹配（支持通配符）
+function Utilities.StringMatch(str, patternList)
+    if type(str) ~= "string" then return false end
+    
+    str = str:lower()
+    for _, pattern in ipairs(patternList) do
+        local lowerPattern = pattern:lower()
+        
+        -- 精确匹配
+        if str == lowerPattern then
+            return true
+        end
+        
+        -- 包含匹配
+        if str:find(lowerPattern, 1, true) then
+            return true
+        end
+        
+        -- 通配符匹配（简单版）
+        if lowerPattern:find("*") then
+            local regexPattern = "^" .. lowerPattern:gsub("%*", ".*") .. "$"
+            if str:match(regexPattern) then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+-- 获取玩家角色
+function Utilities.GetPlayerCharacter(player)
+    player = player or LocalPlayer
+    if not player then return nil end
+    
+    -- 尝试获取现有角色
+    local character = player.Character
+    if character and character:IsDescendantOf(Workspace) then
+        return character
+    end
+    
+    -- 等待角色加载
+    local startTime = tick()
+    while tick() - startTime < 15 do
+        character = player.Character
+        if character and character:IsDescendantOf(Workspace) then
+            return character
+        end
+        wait(0.1)
+    end
+    
+    return nil
+end
+
+-- 强制设置角色存活
+function Utilities.ForceAlive(humanoid)
+    if not humanoid then return false end
+    
+    return Utilities.SafeCall(function()
+        -- 设置生命值
+        humanoid.Health = math.max(1, humanoid.MaxHealth * 0.6)
+        
+        -- 设置状态
+        humanoid.Dead = false
+        humanoid.HealthState = Enum.HealthState.Alive
+        
+        -- 设置状态值
+        local healthState = humanoid:FindFirstChild("HealthState")
+        if healthState and healthState:IsA("StringValue") then
+            healthState.Value = "Alive"
+        end
+        
+        -- 清除死亡标记
+        local deathMark = humanoid:FindFirstChild("Died")
+        if deathMark then
+            deathMark:Destroy()
+        end
+        
+        return true
+    end) or false
+end
+
+-- 记录死亡位置
+function Utilities.RecordDeathPosition(position)
+    if not position then return end
+    
+    table.insert(STATE.DeathPositions, {
+        Position = position,
+        Time = tick()
+    })
+    
+    -- 保持最近N个位置
+    while #STATE.DeathPositions > CONFIG.RESPAWN_POSITION_MEMORY do
+        table.remove(STATE.DeathPositions, 1)
+    end
+    
+    STATE.LastSafePosition = position
+end
+
+-- 获取最近死亡位置
+function Utilities.GetRecentDeathPosition()
+    if #STATE.DeathPositions == 0 then
+        return STATE.LastSafePosition or Vector3.new(0, 10, 0)
+    end
+    
+    -- 返回最新的死亡位置
+    return STATE.DeathPositions[#STATE.DeathPositions].Position
+end
+
+-- 断开所有连接（安全版）
+function Utilities.DisconnectAll(connectionTable)
+    for category, connections in pairs(connectionTable) do
+        if type(connections) == "table" then
+            for i, conn in ipairs(connections) do
+                if conn and type(conn) == "userdata" and conn.Connected then
+                    Utilities.SafeCall(function()
+                        conn:Disconnect()
+                    end)
+                end
+            end
+            connectionTable[category] = {}
+        elseif connections and type(connections) == "userdata" and connections.Connected then
+            Utilities.SafeCall(function()
+                connections:Disconnect()
+            end)
+            connectionTable[category] = nil
+        end
+    end
+end
+
+-- ==================== 核心模块：6倍自动回血系统 ====================
+local HealSystem = {}
+
+function HealSystem.Initialize(humanoid)
+    if not humanoid then return end
+    
+    -- 清除旧连接
+    Utilities.DisconnectAll(STATE.Connections.Heal)
+    
+    -- 基础回血参数
+    local baseHealRate = humanoid.MaxHealth * CONFIG.HEAL_BASE_RATE
+    local healPerSecond = baseHealRate * CONFIG.HEAL_MULTIPLIER
+    
+    -- 主回血循环
+    local healConnection = RunService.Heartbeat:Connect(function(deltaTime)
+        if not humanoid or not humanoid.Parent then
+            healConnection:Disconnect()
+            return
+        end
+        
+        if not STATE.IsCharacterValid or humanoid.Health <= 0 then
+            return
+        end
+        
+        -- 计算回血量
+        local healAmount = healPerSecond * deltaTime
+        
+        -- 紧急回血加成
+        if humanoid.Health / humanoid.MaxHealth < CONFIG.EMERGENCY_HEAL_THRESHOLD then
+            healAmount = healAmount * CONFIG.EMERGENCY_HEAL_BOOST
+        end
+        
+        -- 应用回血
+        local newHealth = humanoid.Health + healAmount
+        newHealth = math.min(newHealth, humanoid.MaxHealth, CONFIG.HEALTH_CAP)
+        
+        -- 防止瞬间死亡
+        if newHealth < 1 then
+            newHealth = math.max(1, humanoid.MaxHealth * 0.2)
+        end
+        
+        humanoid.Health = newHealth
+        
+        -- 更新最后有效生命值
+        if humanoid.Health > 0 then
+            STATE.LastValidHealth = humanoid.Health
         end
     end)
+    
+    table.insert(STATE.Connections.Heal, healConnection)
+    
+    -- 血量监控
+    local monitorConnection = humanoid.Changed:Connect(function(property)
+        if property == "Health" then
+            -- 防止血量被恶意设置
+            if humanoid.Health <= 0 and STATE.IsCharacterValid then
+                Utilities.SafeCall(function()
+                    humanoid.Health = math.max(1, humanoid.MaxHealth * 0.3)
+                end)
+            end
+            
+            -- 检测异常血量下降
+            if STATE.LastValidHealth and humanoid.Health < STATE.LastValidHealth * 0.3 then
+                Utilities.SafeCall(function()
+                    humanoid.Health = STATE.LastValidHealth * 0.5
+                end)
+            end
+            
+            if humanoid.Health > 0 then
+                STATE.LastValidHealth = humanoid.Health
+            end
+        elseif property == "MaxHealth" then
+            -- 防止最大血量被恶意降低
+            if humanoid.MaxHealth < 50 then
+                Utilities.SafeCall(function()
+                    humanoid.MaxHealth = 100
+                end)
+            end
+        end
+    end)
+    
+    table.insert(STATE.Connections.Heal, monitorConnection)
+    
+    -- 触摸回血（手机端专属）
+    if CONFIG.MOBILE_OPTIMIZATION then
+        local touchConnection = UserInputService.TouchTap:Connect(function(touchPos, gameProcessed)
+            if not gameProcessed and humanoid and STATE.IsCharacterValid then
+                if humanoid.Health < humanoid.MaxHealth * 0.5 then
+                    Utilities.SafeCall(function()
+                        humanoid.Health = humanoid.Health + humanoid.MaxHealth * 0.15
+                    end)
+                end
+            end
+        end)
+        
+        table.insert(STATE.Connections.Heal, touchConnection)
+    end
 end
 
--- 核心功能2：拦截抓取（多维度防御机制）
-local function SetupAntiGrabSystem(character)
+-- ==================== 核心模块：抓取拦截系统 ====================
+local AntiGrabSystem = {}
+
+function AntiGrabSystem.Initialize(character)
     if not character then return end
-    DisconnectAllConnections()
     
-    local humanoidRootPart = SafeGetInstance(character, "HumanoidRootPart", "Part")
-    local humanoid = SafeGetInstance(character, "Humanoid", "Humanoid")
-    if not humanoidRootPart or not humanoid then return end
+    Utilities.DisconnectAll(STATE.Connections.AntiGrab)
     
-    -- 拦截1：阻止关节连接（常见抓取方式）
-    table.insert(GLOBAL_STATE.AntiGrabConnections, character.DescendantAdded:Connect(function(desc)
-        if desc:IsA("JointInstance") or desc:IsA("WeldConstraint") or desc:IsA("RopeConstraint") then
-            -- 排除自身骨骼连接，拦截外部抓取关节
-            if not desc.Name:lower():find("bone") and not desc.Name:lower():find("joint") then
-                DEBRIS:AddItem(desc, 0.01) -- 延迟销毁防止报错
+    local humanoidRootPart = Utilities.FindInstance(character, "HumanoidRootPart", "BasePart")
+    if not humanoidRootPart then return end
+    
+    -- 1. 拦截关节连接
+    local jointConnection = character.DescendantAdded:Connect(function(descendant)
+        if not STATE.IsCharacterValid then return end
+        
+        local jointTypes = {"Weld", "WeldConstraint", "Motor6D", "BallSocketConstraint", "HingeConstraint"}
+        local isExternalJoint = false
+        
+        for _, jointType in ipairs(jointTypes) do
+            if descendant:IsA(jointType) then
+                -- 检查是否连接到外部对象
+                local part0 = descendant:GetAttribute("Part0") or (descendant:IsA("Motor6D") and descendant.Part0)
+                local part1 = descendant:GetAttribute("Part1") or (descendant:IsA("Motor6D") and descendant.Part1)
+                
+                if part0 and not part0:IsDescendantOf(character) then
+                    isExternalJoint = true
+                    break
+                end
+                if part1 and not part1:IsDescendantOf(character) then
+                    isExternalJoint = true
+                    break
+                end
             end
         end
-    end))
+        
+        if isExternalJoint then
+            Utilities.DelayedCall(0, function()
+                Utilities.SafeCall(function()
+                    descendant:Destroy()
+                end)
+            end)
+        end
+    end)
     
-    -- 拦截2：监控父对象变更（防止被抓取到其他模型）
-    table.insert(GLOBAL_STATE.AntiGrabConnections, humanoidRootPart.Changed:Connect(function(property)
-        if property == "Parent" then
-            local newParent = humanoidRootPart.Parent
-            if newParent and not newParent:IsDescendantOf(character) and not newParent:IsDescendantOf(WORKSPACE) then
-                humanoidRootPart.Parent = character -- 强制还原父对象
+    table.insert(STATE.Connections.AntiGrab, jointConnection)
+    
+    -- 2. 监控父对象变化
+    local parentConnection = humanoidRootPart:GetPropertyChangedSignal("Parent"):Connect(function()
+        if not STATE.IsCharacterValid then return end
+        
+        local currentParent = humanoidRootPart.Parent
+        if currentParent and currentParent ~= character then
+            if not currentParent:IsDescendantOf(Workspace) then
+                Utilities.SafeCall(function()
+                    humanoidRootPart.Parent = character
+                end)
             end
         end
-    end))
+    end)
     
-    -- 拦截3：检测异常力作用（抓取时的力变化）
-    table.insert(GLOBAL_STATE.AntiGrabConnections, humanoidRootPart.Touched:Connect(function(hit)
-        if hit.Parent ~= character and hit:FindFirstChildOfClass("BodyForce") then
-            local force = hit.BodyForce.Force.Magnitude
-            if force > 5000 then -- 超过阈值判定为强制抓取
-                hit.BodyForce:Destroy() -- 移除抓取力
-            end
-        end
-    end))
+    table.insert(STATE.Connections.AntiGrab, parentConnection)
     
-    -- 拦截4：实时检测距离异常（防止被远距离抓取）
-    table.insert(GLOBAL_STATE.AntiGrabConnections, RUN_SERVICE.RenderStepped:Connect(function()
-        local players = PLAYER_SERVICE:GetPlayers()
-        for _, p in ipairs(players) do
-            if p ~= player and p.Character then
-                local targetRoot = SafeGetInstance(p.Character, "HumanoidRootPart", "Part")
-                if targetRoot then
-                    local distance = (humanoidRootPart.Position - targetRoot.Position).Magnitude
-                    if distance < CONFIG.BLOCK_GRAB_RANGE and p.Character:FindFirstChildOfClass("Humanoid") then
-                        -- 阻止近距离异常抓取
-                        local targetHumanoid = p.Character.Humanoid
-                        if targetHumanoid:FindFirstChild("GrabTarget") then
-                            targetHumanoid.GrabTarget:Destroy()
+    -- 3. 检测力场抓取
+    local forceCheckConnection = RunService.Heartbeat:Connect(function()
+        if not STATE.IsCharacterValid or not humanoidRootPart then return end
+        
+        -- 检查附近的力场
+        local nearbyParts = Workspace:GetPartsInPart(humanoidRootPart, OverlapParams.new())
+        
+        for _, part in ipairs(nearbyParts) do
+            if part.Parent ~= character then
+                -- 检查力场组件
+                local bodyForces = {
+                    part:FindFirstChildOfClass("BodyForce"),
+                    part:FindFirstChildOfClass("BodyVelocity"),
+                    part:FindFirstChildOfClass("BodyPosition"),
+                    part:FindFirstChildOfClass("BodyAngularVelocity")
+                }
+                
+                for _, force in ipairs(bodyForces) do
+                    if force then
+                        local forceMagnitude = 0
+                        
+                        if force:IsA("BodyForce") then
+                            forceMagnitude = force.Force.Magnitude
+                        elseif force:IsA("BodyVelocity") then
+                            forceMagnitude = force.Velocity.Magnitude
+                        elseif force:IsA("BodyPosition") then
+                            forceMagnitude = force.Position.Magnitude
+                        end
+                        
+                        if forceMagnitude > CONFIG.GRAB_FORCE_THRESHOLD then
+                            Utilities.SafeCall(function()
+                                force:Destroy()
+                            end)
+                            
+                            -- 推开抓取对象
+                            if part.Parent:FindFirstChildOfClass("Humanoid") then
+                                local direction = (humanoidRootPart.Position - part.Position).Unit
+                                part.Velocity = direction * CONFIG.ANTI_GRAB_PUSH_FORCE
+                            end
                         end
                     end
                 end
             end
         end
-    end))
+    end)
+    
+    table.insert(STATE.Connections.AntiGrab, forceCheckConnection)
+    
+    -- 4. 防吸星大法（防拉取）
+    local pullCheckConnection = RunService.Heartbeat:Connect(function()
+        if not STATE.IsCharacterValid or not humanoidRootPart then return end
+        
+        -- 检测异常速度（被拉扯）
+        local currentVelocity = humanoidRootPart.Velocity.Magnitude
+        if currentVelocity > 80 then -- 异常高速移动
+            Utilities.SafeCall(function()
+                humanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end)
+        end
+        
+        -- 检测异常位置变化
+        if STATE.LastValidCFrame then
+            local positionDelta = (humanoidRootPart.Position - STATE.LastValidCFrame.Position).Magnitude
+            if positionDelta > 50 then -- 异常位移
+                Utilities.SafeCall(function()
+                    humanoidRootPart.CFrame = STATE.LastValidCFrame
+                end)
+            end
+        end
+        
+        -- 更新最后有效位置
+        STATE.LastValidCFrame = humanoidRootPart.CFrame
+    end)
+    
+    table.insert(STATE.Connections.AntiGrab, pullCheckConnection)
 end
 
--- 核心功能3：强制拦截死亡后突脸（位置锁定机制）
-local function SetupAntiDeathWarpSystem(character)
+-- ==================== 核心模块：突脸拦截系统 ====================
+local AntiWarpSystem = {}
+
+function AntiWarpSystem.Initialize(character)
     if not character then return end
-    DisconnectAllConnections()
     
-    local humanoidRootPart = SafeGetInstance(character, "HumanoidRootPart", "Part")
+    Utilities.DisconnectAll(STATE.Connections.AntiWarp)
+    
+    local humanoidRootPart = Utilities.FindInstance(character, "HumanoidRootPart", "BasePart")
     if not humanoidRootPart then return end
     
-    local lastValidCFrame = humanoidRootPart.CFrame -- 记录最后有效位置
-    GLOBAL_STATE.AntiWarpConnection = RUN_SERVICE.RenderStepped:Connect(function()
-        if not humanoidRootPart or not character:IsDescendantOf(WORKSPACE) then return end
-        -- 计算当前位置与最后有效位置的距离
-        local distance = (humanoidRootPart.CFrame.Position - lastValidCFrame.Position).Magnitude
-        -- 超过阈值判定为突脸，强制重置位置
-        if distance > CONFIG.ANTI_WARP_THRESHOLD then
-            humanoidRootPart.CFrame = lastValidCFrame
+    local lastPosition = humanoidRootPart.Position
+    local lastUpdate = tick()
+    local warpCooldown = 0
+    
+    local warpConnection = RunService.Heartbeat:Connect(function()
+        if not STATE.IsCharacterValid or not humanoidRootPart then
+            warpConnection:Disconnect()
+            return
         end
-        -- 实时更新有效位置（正常移动时）
-        if distance < 1 then
-            lastValidCFrame = humanoidRootPart.CFrame
+        
+        local currentTime = tick()
+        local deltaTime = currentTime - lastUpdate
+        
+        -- 冷却时间处理
+        if warpCooldown > 0 then
+            warpCooldown = warpCooldown - deltaTime
+            lastUpdate = currentTime
+            return
+        end
+        
+        -- 计算位置变化
+        local currentPosition = humanoidRootPart.Position
+        local positionDelta = (currentPosition - lastPosition).Magnitude
+        
+        -- 计算速度
+        local speed = positionDelta / math.max(deltaTime, 0.001)
+        
+        -- 突脸检测条件
+        local isWarping = false
+        
+        -- 条件1：速度异常
+        if speed > 100 then -- 每秒移动超过100单位
+            isWarping = true
+        end
+        
+        -- 条件2：位移异常
+        if positionDelta > CONFIG.WARP_DETECTION_THRESHOLD and deltaTime < 0.1 then
+            isWarping = true
+        end
+        
+        -- 条件3：穿墙检测（位置异常更新）
+        if positionDelta > 5 and deltaTime < 0.02 then
+            isWarping = true
+        end
+        
+        -- 拦截处理
+        if isWarping then
+            -- 记录事件
+            warn("[突脸拦截] 检测到异常位置变化:", positionDelta, "速度:", speed)
+            
+            -- 还原位置
+            Utilities.SafeCall(function()
+                humanoidRootPart.CFrame = CFrame.new(lastPosition) + CONFIG.RESPAWN_POSITION_OFFSET
+            end)
+            
+            -- 重置物理状态
+            Utilities.SafeCall(function()
+                humanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+                humanoidRootPart.RotVelocity = Vector3.new(0, 0, 0)
+                humanoidRootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                humanoidRootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end)
+            
+            -- 进入冷却
+            warpCooldown = CONFIG.WARP_COOLDOWN
+            
+            -- 更新位置记录
+            lastPosition = humanoidRootPart.Position
+        else
+            -- 正常移动，更新位置记录
+            lastPosition = currentPosition
+        end
+        
+        lastUpdate = currentTime
+    end)
+    
+    table.insert(STATE.Connections.AntiWarp, warpConnection)
+    
+    -- 额外保护：监控CFrame变化
+    local cframeConnection = humanoidRootPart:GetPropertyChangedSignal("CFrame"):Connect(function()
+        if not STATE.IsCharacterValid then return end
+        
+        -- 检查CFrame是否被直接设置
+        local currentCFrame = humanoidRootPart.CFrame
+        if STATE.LastValidCFrame then
+            local delta = (currentCFrame.Position - STATE.LastValidCFrame.Position).Magnitude
+            if delta > 30 then -- 异常CFrame设置
+                Utilities.SafeCall(function()
+                    humanoidRootPart.CFrame = STATE.LastValidCFrame
+                end)
+            end
         end
     end)
+    
+    table.insert(STATE.Connections.AntiWarp, cframeConnection)
+    
+    STATE.LastValidCFrame = humanoidRootPart.CFrame
 end
 
--- 核心功能4：强制拦截剧情杀（深度Hook防护）
-local function SetupAntiScriptedDeathSystem(humanoid)
+-- ==================== 核心模块：剧情杀拦截系统 ====================
+local AntiScriptedDeathSystem = {}
+
+function AntiScriptedDeathSystem.Initialize(humanoid)
     if not humanoid then return end
-    DisconnectAllConnections()
     
-    -- Hook1：拦截生命值设置（防止强制设为0）
-    local humanoidMetatable = getmetatable(humanoid)
-    if humanoidMetatable and humanoidMetatable.__newindex then
-        local originalNewIndex = humanoidMetatable.__newindex
-        GLOBAL_STATE.AntiScriptedDeathConnection = humanoidMetatable.__newindex:Connect(function(t, k, v)
-            if k == "Health" then
-                -- 阻止任何强制设置生命值≤0的操作
-                if type(v) == "number" and v <= 0 then
-                    return originalNewIndex(t, k, humanoid.MaxHealth * 0.5) -- 强制保留50%血
-                end
-                -- 阻止剧情杀强制锁血（如设置为1血无法恢复）
-                if type(v) == "number" and v == 1 and humanoid.MaxHealth > 10 then
-                    return originalNewIndex(t, k, humanoid.MaxHealth)
-                end
+    Utilities.DisconnectAll(STATE.Connections.AntiScriptedDeath)
+    
+    -- 1. Hook Humanoid属性设置
+    local humanoidMeta = getrawmetatable(humanoid)
+    if humanoidMeta and not STATE.HookedHumanoidMeta then
+        STATE.HookedHumanoidMeta = true
+        
+        local originalIndex = humanoidMeta.__index
+        local originalNewIndex = humanoidMeta.__newindex
+        
+        humanoidMeta.__index = newcclosure(function(self, key)
+            if key == "Health" and STATE.IsCharacterValid then
+                return math.max(1, originalIndex(self, key))
+            elseif key == "Dead" then
+                return false
+            elseif key == "HealthState" then
+                return Enum.HealthState.Alive
             end
-            return originalNewIndex(t, k, v)
+            return originalIndex(self, key)
+        end)
+        
+        humanoidMeta.__newindex = newcclosure(function(self, key, value)
+            if not STATE.IsCharacterValid then
+                return originalNewIndex(self, key, value)
+            end
+            
+            if key == "Health" then
+                if value <= 0 then
+                    value = math.max(1, self.MaxHealth * 0.6)
+                elseif value < self.MaxHealth * 0.2 then
+                    value = math.max(value, self.MaxHealth * 0.4)
+                end
+            elseif key == "Dead" and value == true then
+                value = false
+            elseif key == "HealthState" and value ~= Enum.HealthState.Alive then
+                value = Enum.HealthState.Alive
+            elseif key == "MaxHealth" and value < 50 then
+                value = math.max(50, value * 2)
+            end
+            
+            return originalNewIndex(self, key, value)
         end)
     end
     
-    -- Hook2：拦截Humanoid状态变更（防止剧情杀强制死亡）
-    table.insert(GLOBAL_STATE.AntiGrabConnections, humanoid.Changed:Connect(function(property)
-        if property == "HealthState" then
-            humanoid.HealthState = Enum.HealthState.Alive -- 强制保持存活状态
+    -- 2. 监控属性变化
+    local propertyConnection = humanoid.Changed:Connect(function(property)
+        if not STATE.IsCharacterValid then return end
+        
+        if property == "Health" and humanoid.Health <= 0 then
+            Utilities.ForceAlive(humanoid)
+        elseif property == "Dead" and humanoid.Dead then
+            Utilities.SafeCall(function()
+                humanoid.Dead = false
+            end)
+        elseif property == "HealthState" then
+            Utilities.SafeCall(function()
+                humanoid.HealthState = Enum.HealthState.Alive
+            end)
         end
-        if property == "Dead" and humanoid.Dead then
-            humanoid.Dead = false -- 取消死亡状态
-        end
-    end))
+    end)
     
-    -- Hook3：拦截剧情杀相关RemoteEvent（常见触发方式）
-    local function blockScriptedDeathRemotes()
-        local remotes = {
-            REPLICATED_STORAGE:FindFirstChild("ScriptedDeath"),
-            REPLICATED_STORAGE:FindFirstChild("ForceDeath"),
-            REPLICATED_STORAGE:FindFirstChild("StoryKill"),
-            REPLICATED_STORAGE:FindFirstChild("KillPlayer"),
-            REPLICATED_STORAGE:FindFirstChild("GameOver")
+    table.insert(STATE.Connections.AntiScriptedDeath, propertyConnection)
+    
+    -- 3. 拦截剧情杀脚本
+    local function DisableDeathScripts()
+        local containers = {
+            LocalPlayer.PlayerScripts,
+            Workspace,
+            ReplicatedStorage,
+            game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts"),
+            game:GetService("StarterGui")
         }
-        for _, remote in ipairs(remotes) do
-            if remote and remote:IsA("RemoteEvent") then
-                local originalOnServerEvent = remote.OnServerEvent
-                remote.OnServerEvent = function(...)
-                    local args = {...}
-                    if args[1] == player then
-                        return -- 拦截针对当前玩家的剧情杀事件
+        
+        for _, container in ipairs(containers) do
+            if container then
+                local descendants = container:GetDescendants()
+                for _, descendant in ipairs(descendants) do
+                    if descendant:IsA("LocalScript") or descendant:IsA("Script") then
+                        local shouldDisable = Utilities.StringMatch(descendant.Name, CONFIG.SCRIPTED_DEATH_KEYWORDS)
+                        
+                        if not shouldDisable and descendant:IsA("LocalScript") then
+                            -- 检查脚本内容
+                            local source = descendant.Source
+                            if type(source) == "string" then
+                                for _, keyword in ipairs(CONFIG.SCRIPTED_DEATH_KEYWORDS) do
+                                    if source:lower():find(keyword:lower()) then
+                                        shouldDisable = true
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                        
+                        if shouldDisable and not STATE.BlockedScripts[descendant] then
+                            STATE.BlockedScripts[descendant] = true
+                            Utilities.SafeCall(function()
+                                descendant.Disabled = true
+                                descendant:Destroy()
+                            end)
+                        end
                     end
-                    originalOnServerEvent(...)
                 end
             end
         end
     end
-    blockScriptedDeathRemotes()
-    -- 监听RemoteEvent新增，持续拦截
-    table.insert(GLOBAL_STATE.AntiGrabConnections, REPLICATED_STORAGE.DescendantAdded:Connect(function(desc)
-        if desc:IsA("RemoteEvent") and desc.Name:lower():find("death") or desc.Name:lower():find("kill") then
-            blockScriptedDeathRemotes()
+    
+    -- 初始禁用
+    DisableDeathScripts()
+    
+    -- 监听新脚本
+    local scriptConnection = Workspace.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("LocalScript") or descendant:IsA("Script") then
+            if Utilities.StringMatch(descendant.Name, CONFIG.SCRIPTED_DEATH_KEYWORDS) then
+                Utilities.DelayedCall(0.1, function()
+                    if descendant and descendant.Parent then
+                        Utilities.SafeCall(function()
+                            descendant.Disabled = true
+                            descendant:Destroy()
+                        end)
+                    end
+                end)
+            end
         end
-    end))
+    end)
+    
+    table.insert(STATE.Connections.AntiScriptedDeath, scriptConnection)
 end
 
--- 核心功能5：无限重生+原地复活（破解一命/观战限制）
-local function SetupInfiniteRespawnSystem(character)
+-- ==================== 核心模块：角色防销毁系统 ====================
+local AntiDestroySystem = {}
+
+function AntiDestroySystem.Initialize(character)
     if not character then return end
-    local humanoid = SafeGetInstance(character, "Humanoid", "Humanoid")
-    if not humanoid then return end
     
-    -- 记录初始死亡位置
-    local humanoidRootPart = SafeGetInstance(character, "HumanoidRootPart", "Part")
-    if humanoidRootPart then
-        GLOBAL_STATE.LastDeathCFrame = humanoidRootPart.CFrame
-    end
+    Utilities.DisconnectAll(STATE.Connections.AntiDestroy)
     
-    -- 绑定死亡事件
-    humanoid.Died:Connect(function()
-        if GLOBAL_STATE.RespawnLock then return end
-        GLOBAL_STATE.RespawnLock = true -- 防止重复重生
+    -- 1. 拦截销毁事件
+    local destroyConnection = character.Destroying:Connect(function()
+        if STATE.IsRespawning then return end
         
-        -- 记录当前死亡位置（覆盖旧位置）
-        local deathRootPart = SafeGetInstance(character, "HumanoidRootPart", "Part")
-        if deathRootPart then
-            GLOBAL_STATE.LastDeathCFrame = deathRootPart.CFrame
+        warn("[防销毁] 检测到角色销毁尝试")
+        STATE.IsRespawning = true
+        
+        -- 记录位置
+        local rootPart = Utilities.FindInstance(character, "HumanoidRootPart", "BasePart")
+        if rootPart then
+            Utilities.RecordDeathPosition(rootPart.Position)
         end
         
-        -- 短暂延迟用于清理
-        wait(CONFIG.RESPAWN_DELAY)
+        -- 延迟重生
+        Utilities.DelayedCall(CONFIG.RESPAWN_DELAY, function()
+            Utilities.SafeCall(function()
+                LocalPlayer:LoadCharacter()
+            end)
+            STATE.IsRespawning = false
+        end)
+    end)
+    
+    table.insert(STATE.Connections.AntiDestroy, destroyConnection)
+    
+    -- 2. 核心部件保护
+    local partProtectionConnection = character.DescendantRemoving:Connect(function(descendant)
+        if not STATE.IsCharacterValid then return end
         
-        -- 破解一命重生限制：强制启用重生功能
-        player:SetAttribute("CanRespawn", true)
-        player:SetAttribute("RespawnCount", math.huge) -- 无限重生次数
-        player:SetAttribute("OneLifeMode", false) -- 关闭一命模式
-        
-        -- 强制重生（无视游戏限制）
-        player:LoadCharacter()
-        
-        -- 等待新角色加载完成
-        local newCharacter = nil
-        repeat
-            wait(0.01)
-            newCharacter = player.Character
-        until newCharacter
-        
-        GLOBAL_STATE.CharacterReference = newCharacter
-        local newHumanoid = SafeGetInstance(newCharacter, "Humanoid", "Humanoid")
-        local newRootPart = SafeGetInstance(newCharacter, "HumanoidRootPart", "Part")
-        GLOBAL_STATE.HumanoidReference = newHumanoid
-        
-        -- 原地复活：设置到死亡位置
-        if newRootPart and GLOBAL_STATE.LastDeathCFrame then
-            newRootPart.CFrame = GLOBAL_STATE.LastDeathCFrame + Vector3.new(0, 0.5, 0) -- 轻微抬高防止卡地形
+        -- 检查是否为核心部件
+        local isCriticalPart = false
+        for _, partName in ipairs(CONFIG.CRITICAL_BODY_PARTS) do
+            if descendant.Name == partName and descendant:IsA("BasePart") then
+                isCriticalPart = true
+                break
+            end
         end
         
-        -- 破解强制观战：关闭观战UI+退出观战状态
-        player:SetAttribute("InSpectatorMode", false)
-        local playerGui = SafeGetInstance(player, "PlayerGui", "PlayerGui")
-        if playerGui then
-            for _, gui in ipairs(playerGui:GetChildren()) do
-                if gui.Name:lower():find("spectator") or gui.Name:lower():find("观战") or gui.Name:lower():find("observer") then
-                    gui:Destroy() -- 销毁观战界面
+        if isCriticalPart then
+            warn("[部件保护] 检测到核心部件移除:", descendant.Name)
+            
+            -- 创建替代部件
+            Utilities.DelayedCall(CONFIG.PART_REPLICATION_DELAY, function()
+                if character and character.Parent then
+                    Utilities.SafeCall(function()
+                        local newPart = Instance.new("Part")
+                        newPart.Name = descendant.Name
+                        newPart.Size = descendant.Size
+                        newPart.CFrame = descendant.CFrame
+                        newPart.Anchored = false
+                        newPart.CanCollide = true
+                        newPart.Parent = character
+                        
+                        -- 重新绑定Humanoid
+                        if descendant.Name == "HumanoidRootPart" then
+                            local humanoid = Utilities.FindInstance(character, "Humanoid", "Humanoid")
+                            if humanoid then
+                                humanoid.RootPart = newPart
+                            end
+                        end
+                    end)
+                end
+            end)
+        end
+    end)
+    
+    table.insert(STATE.Connections.AntiDestroy, partProtectionConnection)
+    
+    -- 3. 完整性检查
+    local integrityConnection = RunService.Heartbeat:Connect(function()
+        if not character or not character.Parent then return end
+        
+        -- 检查核心部件是否存在
+        for _, partName in ipairs(CONFIG.CRITICAL_BODY_PARTS) do
+            local part = character:FindFirstChild(partName)
+            if not part or not part:IsA("BasePart") then
+                -- 缺失部件，尝试修复
+                Utilities.SafeCall(function()
+                    local newPart = Instance.new("Part")
+                    newPart.Name = partName
+                    
+                    -- 设置合适的大小
+                    if partName == "Head" then
+                        newPart.Size = Vector3.new(2, 2, 2)
+                    elseif partName == "HumanoidRootPart" then
+                        newPart.Size = Vector3.new(2, 2, 1)
+                    else
+                        newPart.Size = Vector3.new(2, 2, 1)
+                    end
+                    
+                    -- 设置位置
+                    local rootPart = character:FindFirstChild("HumanoidRootPart")
+                    if rootPart then
+                        newPart.CFrame = rootPart.CFrame
+                    else
+                        newPart.CFrame = CFrame.new(0, 5, 0)
+                    end
+                    
+                    newPart.Anchored = false
+                    newPart.CanCollide = true
+                    newPart.Parent = character
+                    
+                    -- 重新绑定Humanoid
+                    if partName == "HumanoidRootPart" then
+                        local humanoid = Utilities.FindInstance(character, "Humanoid", "Humanoid")
+                        if humanoid then
+                            humanoid.RootPart = newPart
+                        end
+                    end
+                end)
+            end
+        end
+        
+        -- 检查角色是否被移出Workspace
+        if not character:IsDescendantOf(Workspace) then
+            warn("[完整性检查] 角色不在Workspace中")
+            Utilities.SafeCall(function()
+                character.Parent = Workspace
+            end)
+        end
+    end)
+    
+    table.insert(STATE.Connections.AntiDestroy, integrityConnection)
+end
+
+-- ==================== 核心模块：远程指令拦截系统 ====================
+local RemoteBlockSystem = {}
+
+function RemoteBlockSystem.Initialize()
+    Utilities.DisconnectAll(STATE.Connections.RemoteBlock)
+    
+    -- 拦截RemoteEvent
+    local function BlockRemoteEvents(container)
+        if not container then return end
+        
+        local descendants = container:GetDescendants()
+        for _, remote in ipairs(descendants) do
+            if remote:IsA("RemoteEvent") and not STATE.BlockedRemotes[remote] then
+                local shouldBlock = Utilities.StringMatch(remote.Name, CONFIG.SCRIPTED_DEATH_KEYWORDS)
+                
+                if shouldBlock then
+                    STATE.BlockedRemotes[remote] = true
+                    
+                    -- 保存原始函数
+                    local originalFireServer = remote.FireServer
+                    local originalOnClientEvent = remote.OnClientEvent
+                    
+                    -- Hook FireServer（客户端调用）
+                    remote.FireServer = newcclosure(function(self, ...)
+                        local args = {...}
+                        local shouldIntercept = false
+                        
+                        -- 检查参数中是否包含玩家引用
+                        for _, arg in ipairs(args) do
+                            if arg == LocalPlayer or (type(arg) == "userdata" and arg:IsA("Player") and arg == LocalPlayer) then
+                                shouldIntercept = true
+                                break
+                            end
+                        end
+                        
+                        if shouldIntercept then
+                            warn("[远程拦截] 阻止RemoteEvent:", remote.Name)
+                            return nil
+                        end
+                        
+                        return originalFireServer(self, ...)
+                    end)
+                    
+                    -- Hook OnClientEvent（服务器调用）
+                    if originalOnClientEvent then
+                        remote.OnClientEvent = newcclosure(function(self, ...)
+                            local args = {...}
+                            local shouldIntercept = false
+                            
+                            for _, arg in ipairs(args) do
+                                if arg == LocalPlayer or (type(arg) == "userdata" and arg:IsA("Player") and arg == LocalPlayer) then
+                                    shouldIntercept = true
+                                    break
+                                end
+                            end
+                            
+                            if shouldIntercept then
+                                warn("[远程拦截] 阻止服务器RemoteEvent调用:", remote.Name)
+                                
+                                -- 强制回血
+                                if STATE.Humanoid then
+                                    Utilities.ForceAlive(STATE.Humanoid)
+                                end
+                                
+                                return nil
+                            end
+                            
+                            return originalOnClientEvent(self, ...)
+                        end)
+                    end
                 end
             end
         end
+    end
+    
+    -- 拦截RemoteFunction
+    local function BlockRemoteFunctions(container)
+        if not container then return end
         
-        -- 禁用游戏自带的观战逻辑
-        if player:FindFirstChild("PlayerScripts") then
-            local spectatorScripts = player.PlayerScripts:FindFirstChild("SpectatorScripts")
-            if spectatorScripts then
-                spectatorScripts.Disabled = true
+        local descendants = container:GetDescendants()
+        for _, remote in ipairs(descendants) do
+            if remote:IsA("RemoteFunction") and not STATE.BlockedRemotes[remote] then
+                local shouldBlock = Utilities.StringMatch(remote.Name, CONFIG.SCRIPTED_DEATH_KEYWORDS)
+                
+                if shouldBlock then
+                    STATE.BlockedRemotes[remote] = true
+                    
+                    local originalInvokeServer = remote.InvokeServer
+                    local originalInvokeClient = remote.InvokeClient
+                    
+                    -- Hook InvokeServer
+                    remote.InvokeServer = newcclosure(function(self, ...)
+                        local args = {...}
+                        local shouldIntercept = false
+                        
+                        for _, arg in ipairs(args) do
+                            if arg == LocalPlayer or (type(arg) == "userdata" and arg:IsA("Player") and arg == LocalPlayer) then
+                                shouldIntercept = true
+                                break
+                            end
+                        end
+                        
+                        if shouldIntercept then
+                            warn("[远程拦截] 阻止RemoteFunction调用:", remote.Name)
+                            return nil
+                        end
+                        
+                        return originalInvokeServer(self, ...)
+                    end)
+                    
+                    -- Hook InvokeClient
+                    if originalInvokeClient then
+                        remote.InvokeClient = newcclosure(function(self, ...)
+                            local args = {...}
+                            local shouldIntercept = false
+                            
+                            for _, arg in ipairs(args) do
+                                if arg == LocalPlayer or (type(arg) == "userdata" and arg:IsA("Player") and arg == LocalPlayer) then
+                                    shouldIntercept = true
+                                    break
+                                end
+                            end
+                            
+                            if shouldIntercept then
+                                warn("[远程拦截] 阻止服务器RemoteFunction调用:", remote.Name)
+                                
+                                if STATE.Humanoid then
+                                    Utilities.ForceAlive(STATE.Humanoid)
+                                end
+                                
+                                return nil
+                            end
+                            
+                            return originalInvokeClient(self, ...)
+                        end)
+                    end
+                end
+            end
+        end
+    end
+    
+    -- 初始拦截
+    local containers = {
+        ReplicatedStorage,
+        Workspace,
+        game:GetService("StarterPack"),
+        game:GetService("StarterGui"),
+        LocalPlayer:FindFirstChild("PlayerScripts"),
+        LocalPlayer:FindFirstChild("Backpack")
+    }
+    
+    for _, container in ipairs(containers) do
+        BlockRemoteEvents(container)
+        BlockRemoteFunctions(container)
+    end
+    
+    -- 监听新远程对象
+    local remoteAddedConnection = ReplicatedStorage.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") then
+            Utilities.DelayedCall(0.1, function()
+                BlockRemoteEvents(ReplicatedStorage)
+                BlockRemoteFunctions(ReplicatedStorage)
+            end)
+        end
+    end)
+    
+    table.insert(STATE.Connections.RemoteBlock, remoteAddedConnection)
+    
+    -- 定期清理拦截缓存
+    local cleanupConnection = RunService.Heartbeat:Connect(function()
+        -- 每30秒清理一次
+        if tick() - STATE.LastCleanupTime > 30 then
+            STATE.LastCleanupTime = tick()
+            
+            -- 清理无效的缓存引用
+            local newBlockedRemotes = {}
+            for remote, _ in pairs(STATE.BlockedRemotes) do
+                if remote and remote.Parent then
+                    newBlockedRemotes[remote] = true
+                end
+            end
+            STATE.BlockedRemotes = newBlockedRemotes
+        end
+    end)
+    
+    table.insert(STATE.Connections.RemoteBlock, cleanupConnection)
+end
+
+-- ==================== 核心模块：无限重生系统 ====================
+local RespawnSystem = {}
+
+function RespawnSystem.Initialize(character)
+    if not character then return end
+    
+    Utilities.DisconnectAll(STATE.Connections.Respawn)
+    
+    local humanoid = Utilities.FindInstance(character, "Humanoid", "Humanoid")
+    if not humanoid then return end
+    
+    -- 记录初始位置
+    local rootPart = Utilities.FindInstance(character, "HumanoidRootPart", "BasePart")
+    if rootPart and not STATE.LastSafePosition then
+        STATE.LastSafePosition = rootPart.Position
+    end
+    
+    -- 死亡事件处理
+    local diedConnection = humanoid.Died:Connect(function()
+        if STATE.IsRespawning then return end
+        
+        STATE.IsRespawning = true
+        STATE.IsDead = true
+        
+        warn("[重生系统] 角色死亡，触发原地重生")
+        
+        -- 记录死亡位置
+        local deathRootPart = Utilities.FindInstance(character, "HumanoidRootPart", "BasePart")
+        if deathRootPart then
+            Utilities.RecordDeathPosition(deathRootPart.Position)
+        end
+        
+        -- 破解重生限制
+        Utilities.SafeCall(function()
+            -- 设置重生属性
+            LocalPlayer:SetAttribute("CanRespawn", true)
+            LocalPlayer:SetAttribute("RespawnLimit", math.huge)
+            LocalPlayer:SetAttribute("OneLife", false)
+            LocalPlayer:SetAttribute("NoRespawn", false)
+            LocalPlayer:SetAttribute("InfiniteLives", true)
+            
+            -- 破解重生计时器
+            local respawnService = game:GetService("ReplicatedFirst"):FindFirstChild("RespawnService")
+            if respawnService then
+                respawnService:SetAttribute("RespawnTime", 0)
+            end
+            
+            -- 破解重生计数
+            if LocalPlayer:FindFirstChild("leaderstats") then
+                local deaths = LocalPlayer.leaderstats:FindFirstChild("Deaths")
+                if deaths then
+                    deaths.Value = math.max(0, deaths.Value - 1)
+                end
+                
+                local respawns = LocalPlayer.leaderstats:FindFirstChild("Respawns")
+                if respawns then
+                    respawns.Value = math.huge
+                end
+            end
+        end)
+        
+        -- 延迟重生
+        wait(CONFIG.RESPAWN_DELAY)
+        
+        -- 强制重生
+        local success = false
+        for attempt = 1, CONFIG.FORCE_RESPAWN_ATTEMPTS do
+            success = Utilities.SafeCall(function()
+                LocalPlayer:LoadCharacter()
+                return true
+            end) or false
+            
+            if success then
+                break
+            else
+                warn("[重生系统] 重生尝试", attempt, "失败，重试...")
+                wait(0.1)
             end
         end
         
-        -- 重新绑定所有核心功能到新角色
-        SetupRapidHealSystem(newHumanoid)
-        SetupAntiGrabSystem(newCharacter)
-        SetupAntiDeathWarpSystem(newCharacter)
-        SetupAntiScriptedDeathSystem(newHumanoid)
+        if not success then
+            warn("[重生系统] 所有重生尝试失败，使用备用方法")
+            Utilities.SafeCall(function()
+                LocalPlayer.Character = nil
+                wait(0.5)
+                LocalPlayer:LoadCharacter()
+            end)
+        end
         
-        -- 解锁重生锁
-        GLOBAL_STATE.RespawnLock = false
-        GLOBAL_STATE.IsCharacterLoaded = true
+        -- 等待新角色加载
+        local newCharacter = nil
+        local startWait = tick()
+        while tick() - startWait < 10 do
+            newCharacter = LocalPlayer.Character
+            if newCharacter and newCharacter:IsDescendantOf(Workspace) then
+                local newHumanoid = Utilities.FindInstance(newCharacter, "Humanoid", "Humanoid")
+                local newRootPart = Utilities.FindInstance(newCharacter, "HumanoidRootPart", "BasePart")
+                
+                if newHumanoid and newRootPart then
+                    break
+                end
+            end
+            wait(0.1)
+        end
+        
+        -- 如果角色加载失败，强制创建
+        if not newCharacter or not newCharacter:IsDescendantOf(Workspace) then
+            warn("[重生系统] 角色加载失败，创建新角色")
+            Utilities.SafeCall(function()
+                local model = Instance.new("Model")
+                model.Name = LocalPlayer.Name
+                
+                local humanoid = Instance.new("Humanoid")
+                humanoid.Parent = model
+                
+                local rootPart = Instance.new("Part")
+                rootPart.Name = "HumanoidRootPart"
+                rootPart.Size = Vector3.new(2, 2, 1)
+                rootPart.CFrame = CFrame.new(Utilities.GetRecentDeathPosition())
+                rootPart.Parent = model
+                
+                humanoid.RootPart = rootPart
+                model.Parent = Workspace
+                
+                LocalPlayer.Character = model
+                newCharacter = model
+            end)
+        end
+        
+        STATE.IsRespawning = false
+        STATE.IsDead = false
+    end)
+    
+    table.insert(STATE.Connections.Respawn, diedConnection)
+    
+    -- 重生位置设置
+    local characterAddedConnection = LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+        Utilities.DelayedCall(0.5, function()
+            if newCharacter and newCharacter:IsDescendantOf(Workspace) then
+                local rootPart = Utilities.FindInstance(newCharacter, "HumanoidRootPart", "BasePart")
+                if rootPart then
+                    -- 获取死亡位置
+                    local respawnPosition = Utilities.GetRecentDeathPosition()
+                    
+                    -- 设置重生位置
+                    Utilities.SafeCall(function()
+                        rootPart.CFrame = CFrame.new(respawnPosition + CONFIG.RESPAWN_POSITION_OFFSET)
+                    end)
+                    
+                    warn("[重生系统] 已在死亡位置重生:", respawnPosition)
+                end
+            end
+        end)
+    end)
+    
+    table.insert(STATE.Connections.Respawn, characterAddedConnection)
+end
+
+-- ==================== 核心模块：观战破解系统 ====================
+local SpectatorBypassSystem = {}
+
+function SpectatorBypassSystem.Initialize()
+    -- 1. 禁用观战UI
+    local function DisableSpectatorUI()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        if playerGui then
+            for _, guiObject in ipairs(playerGui:GetChildren()) do
+                if guiObject:IsA("ScreenGui") or guiObject:IsA("BillboardGui") then
+                    local shouldHide = Utilities.StringMatch(guiObject.Name, CONFIG.SPECTATOR_KEYWORDS)
+                    
+                    if not shouldHide and guiObject:FindFirstChild("TextLabel") then
+                        local textLabel = guiObject.TextLabel
+                        if textLabel and textLabel:IsA("TextLabel") then
+                            local text = textLabel.Text
+                            if type(text) == "string" then
+                                shouldHide = Utilities.StringMatch(text, CONFIG.SPECTATOR_KEYWORDS)
+                            end
+                        end
+                    end
+                    
+                    if shouldHide then
+                        Utilities.SafeCall(function()
+                            guiObject.Enabled = false
+                            guiObject:Destroy()
+                        end)
+                    end
+                end
+            end
+        end
+    end
+    
+    -- 2. 禁用观战脚本
+    local function DisableSpectatorScripts()
+        local containers = {
+            LocalPlayer.PlayerScripts,
+            Workspace,
+            ReplicatedStorage
+        }
+        
+        for _, container in ipairs(containers) do
+            if container then
+                local scripts = container:GetDescendants()
+                for _, script in ipairs(scripts) do
+                    if script:IsA("LocalScript") or script:IsA("Script") then
+                        local shouldDisable = Utilities.StringMatch(script.Name, CONFIG.SPECTATOR_KEYWORDS)
+                        
+                        if shouldDisable then
+                            Utilities.SafeCall(function()
+                                script.Disabled = true
+                                script:Destroy()
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- 3. 破解观战状态
+    local function BypassSpectatorState()
+        Utilities.SafeCall(function()
+            -- 清除观战属性
+            LocalPlayer:SetAttribute("Spectating", false)
+            LocalPlayer:SetAttribute("InSpectatorMode", false)
+            LocalPlayer:SetAttribute("IsObserver", false)
+            LocalPlayer:SetAttribute("IsDead", false)
+            
+            -- 强制设置存活
+            if LocalPlayer.Character then
+                local humanoid = Utilities.FindInstance(LocalPlayer.Character, "Humanoid", "Humanoid")
+                if humanoid then
+                    Utilities.ForceAlive(humanoid)
+                end
+            end
+        end)
+    end
+    
+    -- 4. 破解相机模式
+    local function BypassCameraMode()
+        local camera = Workspace.CurrentCamera
+        if camera then
+            Utilities.SafeCall(function()
+                -- 强制第一人称/第三人称
+                camera.CameraType = Enum.CameraType.Custom
+                camera.CameraSubject = LocalPlayer.Character and 
+                    Utilities.FindInstance(LocalPlayer.Character, "Humanoid", "Humanoid")
+                
+                -- 禁用观战相机脚本
+                local cameraScripts = camera:GetDescendants()
+                for _, script in ipairs(cameraScripts) do
+                    if script:IsA("LocalScript") then
+                        if Utilities.StringMatch(script.Name, CONFIG.SPECTATOR_KEYWORDS) then
+                            Utilities.SafeCall(function()
+                                script.Disabled = true
+                            end)
+                        end
+                    end
+                end
+            end)
+        end
+    end
+    
+    -- 初始执行
+    DisableSpectatorUI()
+    DisableSpectatorScripts()
+    BypassSpectatorState()
+    BypassCameraMode()
+    
+    -- 定期检查
+    local spectatorCheckConnection = RunService.Heartbeat:Connect(function()
+        BypassSpectatorState()
+        BypassCameraMode()
+        
+        -- 每5秒检查一次UI
+        if tick() % 5 < 0.1 then
+            DisableSpectatorUI()
+        end
+    end)
+    
+    table.insert(STATE.Connections.Monitor, spectatorCheckConnection)
+end
+
+-- ==================== 角色初始化系统 ====================
+local function InitializeCharacter(character)
+    if not character or not character:IsDescendantOf(Workspace) then
+        warn("[初始化] 无效的角色")
+        return
+    end
+    
+    -- 等待角色完全加载
+    local humanoid = nil
+    local rootPart = nil
+    
+    local startTime = tick()
+    while tick() - startTime < 15 do
+        humanoid = Utilities.FindInstance(character, "Humanoid", "Humanoid")
+        rootPart = Utilities.FindInstance(character, "HumanoidRootPart", "BasePart")
+        
+        if humanoid and rootPart and character:IsDescendantOf(Workspace) then
+            break
+        end
+        wait(0.1)
+    end
+    
+    if not humanoid or not rootPart then
+        warn("[初始化] 角色组件加载失败")
+        return
+    end
+    
+    -- 更新全局状态
+    STATE.Character = character
+    STATE.Humanoid = humanoid
+    STATE.HumanoidRootPart = rootPart
+    STATE.IsCharacterValid = true
+    STATE.LastValidCFrame = rootPart.CFrame
+    
+    -- 强化角色属性
+    Utilities.SafeCall(function()
+        -- 生命值强化
+        humanoid.MaxHealth = math.max(100, humanoid.MaxHealth * 1.5)
+        humanoid.Health = humanoid.MaxHealth
+        
+        -- 移动强化
+        humanoid.WalkSpeed = math.min(32, humanoid.WalkSpeed * 1.25)
+        humanoid.JumpPower = math.min(75, humanoid.JumpPower * 1.15)
+        
+        -- 其他强化
+        humanoid.AutoRotate = true
+        humanoid.AutoJumpEnabled = true
+        
+        -- 设置重生点
+        local spawnLocation = Instance.new("SpawnLocation")
+        spawnLocation.CFrame = rootPart.CFrame
+        spawnLocation.Anchored = true
+        spawnLocation.CanCollide = false
+        spawnLocation.Transparency = 1
+        spawnLocation.Parent = Workspace
+        
+        Utilities.DelayedCall(5, function()
+            Utilities.SafeCall(function()
+                spawnLocation:Destroy()
+            end)
+        end)
+    end)
+    
+    -- 初始化所有系统
+    HealSystem.Initialize(humanoid)
+    AntiGrabSystem.Initialize(character)
+    AntiWarpSystem.Initialize(character)
+    AntiScriptedDeathSystem.Initialize(humanoid)
+    AntiDestroySystem.Initialize(character)
+    RemoteBlockSystem.Initialize()
+    RespawnSystem.Initialize(character)
+    SpectatorBypassSystem.Initialize()
+    
+    -- 角色监控
+    local monitorConnection = RunService.Heartbeat:Connect(function()
+        if not character or not character:IsDescendantOf(Workspace) then
+            STATE.IsCharacterValid = false
+            warn("[监控] 角色无效，尝试恢复")
+            
+            Utilities.DelayedCall(1, function()
+                Utilities.SafeCall(function()
+                    LocalPlayer:LoadCharacter()
+                end)
+            end)
+            return
+        end
+        
+        -- 检查Humanoid状态
+        if humanoid and humanoid.Health <= 0 then
+            Utilities.ForceAlive(humanoid)
+        end
+        
+        -- 更新位置记录
+        if rootPart then
+            STATE.LastValidCFrame = rootPart.CFrame
+        end
+        
+        -- 性能监控
+        STATE.ConnectionCount = 0
+        for _, connections in pairs(STATE.Connections) do
+            if type(connections) == "table" then
+                STATE.ConnectionCount = STATE.ConnectionCount + #connections
+            end
+        end
+    end)
+    
+    table.insert(STATE.Connections.Monitor, monitorConnection)
+    
+    warn("[初始化] 角色初始化完成，所有系统已激活")
+end
+
+-- ==================== 全局初始化 ====================
+local function GlobalInitialize()
+    if STATE.IsInitialized then
+        warn("[全局初始化] 脚本已初始化")
+        return
+    end
+    
+    warn("[全局初始化] 开始初始化脚本...")
+    
+    -- 清理旧状态
+    Utilities.DisconnectAll(STATE.Connections)
+    STATE.BlockedRemotes = {}
+    STATE.BlockedScripts = {}
+    STATE.BlockedInstances = {}
+    
+    -- 等待玩家加载
+    if not LocalPlayer then
+        repeat wait() until PlayerService.LocalPlayer
+        LocalPlayer = PlayerService.LocalPlayer
+    end
+    
+    -- 绑定角色添加事件
+    local characterAddedConnection = LocalPlayer.CharacterAdded:Connect(function(character)
+        Utilities.DelayedCall(0.5, function()
+            InitializeCharacter(character)
+        end)
+    end)
+    
+    table.insert(STATE.Connections.Utility, characterAddedConnection)
+    
+    -- 处理现有角色
+    if LocalPlayer.Character then
+        Utilities.DelayedCall(1, function()
+            InitializeCharacter(LocalPlayer.Character)
+        end)
+    else
+        -- 强制加载角色
+        Utilities.DelayedCall(2, function()
+            Utilities.SafeCall(function()
+                LocalPlayer:LoadCharacter()
+            end)
+        end)
+    end
+    
+    -- 全局错误处理
+    local errorConnection = ScriptContext.Error:Connect(function(message, trace, script)
+        warn("[脚本错误]", message)
+        
+        -- 错误恢复
+        Utilities.DelayedCall(1, function()
+            if STATE.Character and STATE.Character:IsDescendantOf(Workspace) then
+                InitializeCharacter(STATE.Character)
+            else
+                Utilities.SafeCall(function()
+                    LocalPlayer:LoadCharacter()
+                end)
+            end
+        end)
+    end)
+    
+    table.insert(STATE.Connections.Utility, errorConnection)
+    
+    -- 手机端优化
+    if CONFIG.MOBILE_OPTIMIZATION then
+        Utilities.SafeCall(function()
+            -- 降低图形质量以提高性能
+            settings().Rendering.QualityLevel = 1
+            
+            -- 禁用不必要的效果
+            Lighting.GlobalShadows = false
+            Lighting.FogEnd = 1000
+            
+            -- 优化物理
+            settings().Physics.PhysicsEnvironmentalThrottle = 2
+        end)
+    end
+    
+    STATE.IsInitialized = true
+    
+    -- 加载完成提示
+    Utilities.DelayedCall(3, function()
+        print("\n" .. string.rep("=", 60))
+        print("📱 手机端通用超强生存脚本 - 加载完成")
+        print(string.rep("-", 60))
+        print("✨ 核心功能激活:")
+        print("   ✓ 6倍自动回血系统（紧急状态加速）")
+        print("   ✓ 原地无限重生系统（精准位置还原）")
+        print("   ✓ 全维度抓取拦截系统（4重防护）")
+        print("   ✓ 死亡突脸强制拦截系统（位置锁定）")
+        print("   ✓ 剧情杀100%拦截系统（Hook+脚本禁用）")
+        print("   ✓ 角色防销毁系统（核心部件自动修复）")
+        print("   ✓ 远程指令拦截系统（关键词全匹配）")
+        print("   ✓ 强制破解一命重生+观战系统")
+        print(string.rep("-", 60))
+        print("⚡ 优化特性:")
+        print("   ✓ 手机端触摸回血支持")
+        print("   ✓ 全局错误自动恢复")
+        print("   ✓ 内存和连接智能管理")
+        print("   ✓ 全Roblox游戏通用适配")
+        print(string.rep("=", 60) .. "\n")
     end)
 end
 
--- 核心角色初始化函数（首次加载+重新生成）
-local function OnCharacterAdded(character)
-    GLOBAL_STATE.CharacterReference = character
-    GLOBAL_STATE.IsCharacterLoaded = false
+-- ==================== 执行初始化 ====================
+GlobalInitialize()
+
+-- 返回脚本状态（可选）
+return {
+    GetStatus = function()
+        return {
+            Initialized = STATE.IsInitialized,
+            CharacterValid = STATE.IsCharacterValid,
+            ConnectionCount = STATE.ConnectionCount,
+            DeathPositions = #STATE.DeathPositions,
+            BlockedRemotes = #STATE.BlockedRemotes
+        }
+    end,
     
-    -- 等待核心组件加载完成
-    local humanoid = SafeGetInstance(character, "Humanoid", "Humanoid")
-    local humanoidRootPart = SafeGetInstance(character, "HumanoidRootPart", "Part")
-    repeat
-        wait(0.01)
-        humanoid = SafeGetInstance(character, "Humanoid", "Humanoid")
-        humanoidRootPart = SafeGetInstance(character, "HumanoidRootPart", "Part")
-    until humanoid and humanoidRootPart
+    Reinitialize = function()
+        STATE.IsInitialized = false
+        GlobalInitialize()
+    end,
     
-    GLOBAL_STATE.HumanoidReference = humanoid
-    humanoid.MaxHealth = humanoid.MaxHealth * 1.5 -- 额外提升50%最大生命值（增强生存）
-    humanoid.Health = humanoid.MaxHealth -- 生成时满血
-    
-    -- 绑定所有核心功能
-    SetupRapidHealSystem(humanoid)
-    SetupAntiGrabSystem(character)
-    SetupAntiDeathWarpSystem(character)
-    SetupAntiScriptedDeathSystem(humanoid)
-    SetupInfiniteRespawnSystem(character)
-    
-    -- 额外防护：防止角色被销毁
-    table.insert(GLOBAL_STATE.AntiGrabConnections, character.Destroying:Connect(function()
-        if not GLOBAL_STATE.RespawnLock then
-            wait(0.01)
-            player:LoadCharacter() -- 强制重生防止角色丢失
+    ForceRespawn = function()
+        if STATE.Character then
+            Utilities.RecordDeathPosition(STATE.Character:GetPivot().Position)
         end
-    end))
-    
-    GLOBAL_STATE.IsCharacterLoaded = true
-end
-
--- 初始化绑定：角色加载事件
-player.CharacterAdded:Connect(OnCharacterAdded)
-
--- 首次加载处理（角色已存在时）
-if player.Character then
-    OnCharacterAdded(player.Character)
-else
-    -- 等待角色首次生成
-    repeat
-        wait(0.1)
-    until player.Character
-    OnCharacterAdded(player.Character)
-end
-
--- 全局错误处理（防止脚本崩溃）
-game:GetService("ScriptContext").Error:Connect(function(err)
-    warn("Script Error:", err)
-    -- 脚本崩溃后重新初始化
-    if GLOBAL_STATE.CharacterReference and GLOBAL_STATE.CharacterReference:IsDescendantOf(WORKSPACE) then
-        OnCharacterAdded(GLOBAL_STATE.CharacterReference)
-    else
-        player:LoadCharacter()
+        Utilities.SafeCall(function()
+            LocalPlayer:LoadCharacter()
+        end)
     end
-end)
-
--- 持续监控角色状态（防止功能失效）
-RUN_SERVICE.Heartbeat:Connect(function()
-    if not GLOBAL_STATE.IsCharacterLoaded then return end
-    if not GLOBAL_STATE.CharacterReference or not GLOBAL_STATE.CharacterReference:IsDescendantOf(WORKSPACE) then
-        player:LoadCharacter()
-        return
-    end
-    if not GLOBAL_STATE.HumanoidReference or GLOBAL_STATE.HumanoidReference.Health <= 0 then
-        GLOBAL_STATE.HumanoidReference.Health = GLOBAL_STATE.HumanoidReference.MaxHealth
-    end
-end)
-
-print("=== 手机端专属脚本加载完成 ===")
-print("核心功能：9倍回血 | 原地重生 | 无限复活")
-print("防护功能：拦截抓取 | 拦截突脸 | 拦截剧情杀")
-print("破解功能：一命重生破解 | 强制观战破解")
+}
 ]])()
